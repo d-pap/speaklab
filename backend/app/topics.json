@@ -1,0 +1,882 @@
+[
+  {
+    "id": "hash-maps",
+    "title": "Hash maps",
+    "category": "Data structures and algorithms",
+    "difficulty": "beginner",
+    "prompt": "How does a hash map find a value so quickly? Explain it with a practical example.",
+    "compare": "Compare a hash map with an array for looking up a customer by ID.",
+    "core": "A hash map associates keys with values. It hashes a key into a bucket so a lookup can jump near the value instead of scanning every entry.",
+    "example": "Imagine counting words in a document. Each distinct word is a key and its count is the value. For every word, look up its current count, then increment it. A hash map avoids searching the whole vocabulary each time.",
+    "nuance": "Expected constant-time lookup depends on a suitable hash function and controlled load. A hash map does not inherently keep keys sorted. A collision is not proof that two keys are equal.",
+    "concepts": [
+      {
+        "id": "hashing",
+        "name": "Hashing and buckets",
+        "reference": "A deterministic hash function turns a key into a hash value. That hash selects a bucket in an underlying table. Equal keys must have equal hashes, but unequal keys may share a hash.",
+        "check": "Why must hashing the same unchanged key give the same result?",
+        "bridge": "A key is the label you search by, such as a user ID; a bucket is a location in the map’s underlying storage."
+      },
+      {
+        "id": "collisions",
+        "name": "Collision resolution",
+        "reference": "Collisions happen when distinct keys map to the same bucket. Chaining stores multiple entries per bucket; open addressing probes other slots. The map compares actual keys before returning a value.",
+        "check": "What prevents two colliding keys from overwriting each other?",
+        "bridge": "There are fewer buckets than possible keys, so sharing a location must be handled rather than assumed impossible."
+      },
+      {
+        "id": "complexity",
+        "name": "Expected versus worst-case cost",
+        "reference": "With a well-distributed hash and bounded load, lookup, insertion, and deletion are expected O(1). Pathological collisions can make a basic implementation O(n). Resizing makes some individual insertions expensive even when amortized insertion is constant.",
+        "check": "Does O(1) mean every lookup takes exactly the same time?",
+        "bridge": "Big-O describes how work scales with input size, not a fixed number of milliseconds; expected cost describes typical behavior under assumptions."
+      },
+      {
+        "id": "resizing",
+        "name": "Load factor and resizing",
+        "reference": "Load factor is the number of entries divided by table capacity. As it grows, collision handling gets more expensive. Resizing allocates a larger table and redistributes entries, trading memory and occasional work for faster average access.",
+        "check": "Why can doubling the table capacity require moving existing entries?",
+        "bridge": "Capacity is the number of available slots. As entries crowd them, the map needs more room."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Open Data Structures: Hash Tables",
+        "url": "https://opendatastructures.org/ods-python/5_Hash_Tables.html"
+      }
+    ],
+    "background": "Imagine finding a user by ID among thousands of records. A list may require checking many entries; a hash map uses the key to narrow down where to look.",
+    "practice": "Python dictionaries and Java HashMap expose key-to-value lookup. Engineers care about hashable keys, collision handling and load, not just the phrase “constant time.” Use a map for repeated exact-key lookup; an ordered index may suit range queries better.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "database-indexing",
+    "title": "Database indexing",
+    "category": "Databases",
+    "difficulty": "intermediate",
+    "prompt": "Explain how an index speeds up a database query, and what you pay for that speed.",
+    "compare": "Compare an indexed lookup with a full table scan. When might a scan win?",
+    "core": "An index is an additional data structure that helps a database locate rows without inspecting the entire table. It makes selected reads cheaper while adding storage and write work.",
+    "example": "An index on orders(customer_id) can locate one customer's orders efficiently. A composite index on (customer_id, created_at) can also help retrieve that customer's orders in date order. An index on a low-selectivity flag may be less useful.",
+    "nuance": "An index does not guarantee the optimizer will use it. Selectivity, table size, query shape, statistics, and the cost of fetching rows matter. B-tree indexes and hash indexes support different kinds of operations.",
+    "concepts": [
+      {
+        "id": "structure",
+        "name": "Index structure",
+        "reference": "A B-tree index keeps keys ordered in a balanced tree with high fan-out. It supports equality and range lookups with relatively few page reads, plus references to matching rows or row data.",
+        "check": "Why does keeping keys ordered help a range query?",
+        "bridge": "A database page is a block of stored data; a tree index groups ordered keys so a search can skip whole groups."
+      },
+      {
+        "id": "cost",
+        "name": "Write and storage costs",
+        "reference": "Inserts, deletes, and updates to indexed columns must update indexes. Each index consumes storage and cache space. An unused index can slow writes without helping reads.",
+        "check": "Why not index every column?",
+        "bridge": "An index is a second representation of some table data, so changing a row may require maintaining both."
+      },
+      {
+        "id": "selectivity",
+        "name": "Selectivity and query planning",
+        "reference": "A selective predicate matches a small fraction of rows. An index is often helpful then; reading most of a table through an index may cost more than a sequential scan. The query planner estimates costs from statistics.",
+        "check": "Why might a database ignore an index when half the rows match?",
+        "bridge": "A predicate is a filter such as customer_id = 42. The planner chooses an access path, not necessarily the index you created."
+      },
+      {
+        "id": "composite",
+        "name": "Composite indexes",
+        "reference": "A multicolumn B-tree index orders by the first column, then by the next within equal first values. Leading-column constraints usually determine how much of the index can be skipped. Column order should follow actual query patterns.",
+        "check": "How does (customer_id, created_at) support a different access pattern from the reverse order?",
+        "bridge": "A composite index uses multiple columns, much like sorting a directory by surname and then first name."
+      }
+    ],
+    "sources": [
+      {
+        "title": "PostgreSQL: Indexes",
+        "url": "https://www.postgresql.org/docs/current/indexes.html"
+      }
+    ],
+    "background": "Consider finding one customer’s orders in a large table. Without a useful shortcut, the database may examine every row; an index supplies an alternate route to matching data.",
+    "practice": "PostgreSQL uses B-tree indexes for many equality and range queries. Engineers inspect EXPLAIN plans to see estimated access paths, then measure representative queries. Composite indexes should follow real filters and ordering; extra indexes are not free.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "neural-networks",
+    "title": "Neural networks",
+    "category": "AI and machine learning",
+    "difficulty": "intermediate",
+    "prompt": "Explain how a neural network turns inputs into predictions, and how it learns.",
+    "compare": "Compare a neural network with a linear model. What extra capability and cost does it bring?",
+    "core": "A neural network is a parameterized function built from layers. Training adjusts its parameters so its predictions better match a learning objective. Layers can learn useful intermediate representations.",
+    "example": "For a handwritten-digit classifier, pixels are inputs and ten output scores correspond to digits. A forward pass predicts scores; a loss compares them with the labeled digit. Gradients tell an optimizer how to change the weights across many examples.",
+    "nuance": "A network does not understand in the same way a person does. More layers or more training do not guarantee better generalization. Data quality, architecture, regularization, and evaluation on unseen data matter.",
+    "concepts": [
+      {
+        "id": "layers",
+        "name": "Neurons and layers",
+        "reference": "A typical dense neuron combines incoming values using learned weights, adds a bias, then applies an activation. Layers compose these operations into increasingly transformed representations.",
+        "check": "What passes from one layer to the next?",
+        "bridge": "An input is represented by numbers. A layer transforms those numbers into another representation for the next layer."
+      },
+      {
+        "id": "parameters",
+        "name": "Weights and biases",
+        "reference": "Weights control the influence of inputs; biases shift an activation's input independently of those values. These parameters are learned from data, rather than being the training examples themselves.",
+        "check": "How does changing a weight differ from changing an input?",
+        "bridge": "A parameter is an adjustable setting of the calculation; an input is the example being processed."
+      },
+      {
+        "id": "activation",
+        "name": "Activation functions",
+        "reference": "Nonlinear activations such as ReLU allow the network to represent nonlinear relationships. Stacking only linear transformations still produces a linear transformation.",
+        "check": "Why are many linear layers insufficient to model an arbitrary nonlinear relationship?",
+        "bridge": "Linear operations can scale and combine inputs, but many useful patterns require a bend or threshold in the relationship."
+      },
+      {
+        "id": "forward",
+        "name": "Forward propagation",
+        "reference": "A forward pass computes each layer's output from the preceding layer until it produces a prediction. Inference uses learned parameters to run this computation on new inputs.",
+        "check": "Does making a prediction normally update the weights?",
+        "bridge": "Before learning from an error, the network first has to produce an output using its current settings."
+      },
+      {
+        "id": "loss",
+        "name": "Loss functions",
+        "reference": "A loss is a scalar measure of how a prediction compares with a target or objective. Cross-entropy is common for classification; squared error is common for regression. The chosen loss defines what training optimizes.",
+        "check": "Why is classification accuracy not always the training loss?",
+        "bridge": "Training needs a measurable objective to tell better predictions from worse ones. Accuracy counts correct classifications; a smooth loss can provide gradients even when that count does not change."
+      },
+      {
+        "id": "backprop",
+        "name": "Backpropagation",
+        "reference": "Backpropagation applies the chain rule backward through the computation graph to efficiently calculate how the loss changes with each parameter. It computes gradients; the optimizer uses them to update parameters.",
+        "check": "What is the difference between backpropagation and gradient descent?",
+        "bridge": "A gradient measures how a small change in a parameter would change the loss. The network can calculate these sensitivities rather than trying every possible setting."
+      },
+      {
+        "id": "optimization",
+        "name": "Gradient descent and training",
+        "reference": "Gradient descent updates parameters in the negative gradient direction, scaled by a learning rate. Mini-batch training repeats forward pass, loss calculation, gradient computation, and update on subsets of data.",
+        "check": "What can happen when the learning rate is too large?",
+        "bridge": "Once gradients are available, an update rule decides how far to move each parameter. Too large a step can overshoot a useful region."
+      },
+      {
+        "id": "generalization",
+        "name": "Generalization and overfitting",
+        "reference": "Training performance is not evidence of good performance on unseen data. Overfitting captures training-specific patterns that fail to generalize. Held-out validation, appropriate capacity, and regularization help detect and reduce it.",
+        "check": "How could training loss fall while validation loss rises?",
+        "bridge": "Memorizing examples is different from learning a pattern that works on new cases; use data the model was not fitted on to check the distinction."
+      }
+    ],
+    "sources": [
+      {
+        "title": "PyTorch: Build the Neural Network",
+        "url": "https://pytorch.org/tutorials/beginner/basics/buildmodel_tutorial.html"
+      },
+      {
+        "title": "PyTorch: Optimization",
+        "url": "https://pytorch.org/tutorials/beginner/basics/optimization_tutorial.html"
+      }
+    ],
+    "background": "Suppose you want to predict a value from measurements but cannot write all the rules by hand. A network defines an adjustable calculation; training chooses its settings from examples.",
+    "practice": "In PyTorch, nn.Module describes a model, a loss compares predictions with targets, autograd calculates gradients, and an optimizer updates parameters. Training and evaluation modes matter for layers such as dropout. Keep that overall loop clear before studying individual architectures.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "backpropagation",
+    "title": "Backpropagation",
+    "category": "AI and machine learning",
+    "difficulty": "advanced",
+    "prompt": "Explain how backpropagation helps a neural network learn. Distinguish calculating gradients from updating weights.",
+    "compare": "Compare backpropagation with gradient descent. How do they cooperate?",
+    "core": "Backpropagation efficiently computes derivatives of a scalar loss with respect to parameters by applying the chain rule in reverse through a computation graph.",
+    "example": "For y = wx and loss = (y - target)², the derivative with respect to w is 2(y - target)x. The output error is multiplied by the local sensitivity of y to w. A deep network repeats this logic through many connected operations.",
+    "nuance": "Gradients can vanish or explode across long chains. Activations, initialization, normalization, and skip connections can help. Automatic differentiation computes derivatives of a program; it is not the same as finite-difference approximation.",
+    "concepts": [
+      {
+        "id": "graph",
+        "name": "Computation graph",
+        "reference": "A forward pass evaluates intermediate operations and a final loss. A computation graph records dependencies and often saves intermediate values needed to calculate local derivatives.",
+        "check": "Why are intermediate forward-pass values useful during backpropagation?",
+        "bridge": "A computation graph is a dependency diagram: multiply, add and other operations connect inputs to the final loss."
+      },
+      {
+        "id": "chain",
+        "name": "Chain rule",
+        "reference": "For a composition f(g(x)), the derivative is f'(g(x)) times g'(x). Backpropagation propagates downstream sensitivity through each local derivative; contributions from multiple paths are added.",
+        "check": "If a parameter influences the loss through two branches, how are those contributions combined?",
+        "bridge": "The chain rule connects a change at an early operation to its downstream effect, like multiplying sensitivities along a route."
+      },
+      {
+        "id": "reverse",
+        "name": "Reverse-mode differentiation",
+        "reference": "Starting with the loss derivative, reverse mode traverses the graph backward and reuses intermediate gradients. It is efficient for a scalar loss depending on many parameters.",
+        "check": "Why is reverse mode convenient when there are millions of weights but one loss?",
+        "bridge": "Reverse mode starts at the output and works backward; a single traversal can compute sensitivities for many inputs."
+      },
+      {
+        "id": "optimizer",
+        "name": "Gradients versus updates",
+        "reference": "Backpropagation calculates gradients. An optimizer such as SGD or Adam uses them to modify parameters. Learning rate and optimizer state affect the update; gradients alone do not choose a step size.",
+        "check": "Can gradients be calculated without changing any parameters?",
+        "bridge": "A direction of improvement does not specify a distance to move. Computing derivatives and choosing parameter updates are separate jobs."
+      }
+    ],
+    "sources": [
+      {
+        "title": "PyTorch: Automatic Differentiation",
+        "url": "https://pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html"
+      }
+    ],
+    "background": "A model may have millions of adjustable weights but one loss value. Backpropagation answers how each weight contributes to that loss, so training can choose an update.",
+    "practice": "PyTorch autograd records differentiable operations. A backward call accumulates gradients; an optimizer step changes parameters. Training code usually clears gradients each iteration unless accumulation is intentional. This separation is useful when debugging unstable training.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "rest-apis",
+    "title": "REST APIs",
+    "category": "Networking and web development",
+    "difficulty": "beginner",
+    "prompt": "Explain how a client interacts with a REST-style API, using a concrete resource.",
+    "compare": "Compare a resource-oriented REST API with an RPC-style endpoint.",
+    "core": "REST is an architectural style for distributed systems centered on resources and a uniform interface. HTTP APIs often borrow its resource-oriented conventions without implementing every REST constraint.",
+    "example": "A client may GET /orders/42 to retrieve an order representation, POST /orders to create one, and DELETE /orders/42 to remove one. Status codes communicate outcomes separately from the response body.",
+    "nuance": "JSON over HTTP is not by itself REST. Statelessness means each request carries the information needed to process it, not that the server cannot store resources. Idempotency describes repeated intended effects, not identical responses.",
+    "concepts": [
+      {
+        "id": "resources",
+        "name": "Resources and representations",
+        "reference": "A resource is an identifiable concept such as an order. A URI identifies it; a representation such as JSON describes its state. Clients exchange representations rather than directly accessing database objects.",
+        "check": "How is a resource different from its JSON representation?",
+        "bridge": "A resource is the thing being addressed, such as an order; its representation is the data exchanged about it."
+      },
+      {
+        "id": "methods",
+        "name": "HTTP method semantics",
+        "reference": "GET retrieves and is safe; PUT replaces a resource state and is idempotent; DELETE is idempotent; POST often creates or performs an operation and is not generally idempotent. PATCH applies partial changes and is not guaranteed idempotent.",
+        "check": "Why can repeated DELETE requests be idempotent even if their status codes differ?",
+        "bridge": "An HTTP method states the intended operation. Idempotent means repeating it has the same intended effect as doing it once."
+      },
+      {
+        "id": "stateless",
+        "name": "Stateless requests",
+        "reference": "The server does not depend on hidden client session context from earlier requests. Each request includes necessary context, such as authentication and target resource. Persistent application data is still allowed.",
+        "check": "Can a stateless API store an order in a database?",
+        "bridge": "Stateless refers to the request interaction, not the absence of stored business data."
+      },
+      {
+        "id": "responses",
+        "name": "Responses and caching",
+        "reference": "HTTP status codes describe success and failure categories. Explicit cache controls let clients and intermediaries reuse appropriate responses. A uniform interface reduces special knowledge needed for each resource.",
+        "check": "Why is a 404 response different from a 500 response for a caller?",
+        "bridge": "The response must communicate both the result and how the caller may handle it. A 404 concerns a missing target; a 500 indicates a server failure."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Fielding: REST",
+        "url": "https://ics.uci.edu/~fielding/pubs/dissertation/rest_arch_style.htm"
+      },
+      {
+        "title": "MDN: HTTP request methods",
+        "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods"
+      },
+      {
+        "title": "OpenAPI Specification",
+        "url": "https://spec.openapis.org/oas/latest.html"
+      }
+    ],
+    "background": "A client and server need a shared way to describe what data is requested and what operation should happen. Resource-oriented HTTP conventions make that interface easier to understand.",
+    "practice": "HTTP APIs commonly use resource URLs, JSON representations, documented status codes and OpenAPI descriptions. GET, POST and PUT have different semantics; retries need care. Calling an API RESTful does not guarantee that every REST constraint is implemented.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "threads-processes",
+    "title": "Threads vs. processes",
+    "category": "Operating systems",
+    "difficulty": "intermediate",
+    "prompt": "Explain the difference between a thread and a process, and when you might choose each.",
+    "compare": "Compare threads and processes for running independent tasks concurrently.",
+    "core": "A process is an execution environment with its own virtual address space and resources. Threads are execution sequences within a process that share much of that environment.",
+    "example": "A web browser can isolate tabs in separate processes so one failure is less likely to corrupt another. Within a server process, multiple threads can share a cache while handling requests, but their access needs coordination.",
+    "nuance": "Concurrency is overlapping progress; parallelism is simultaneous execution. Runtime constraints such as interpreter locks affect whether threads execute CPU-bound code in parallel. Shared memory brings synchronization costs.",
+    "concepts": [
+      {
+        "id": "memory",
+        "name": "Memory and isolation",
+        "reference": "Processes normally have separate virtual address spaces. Threads in one process share heap and globals but have separate execution state and stacks. A memory corruption bug in one thread can affect the whole process.",
+        "check": "Why can two threads easily access the same object?",
+        "bridge": "An address space is a process’s view of memory. Sharing that view makes communication easy but also shares many failure risks."
+      },
+      {
+        "id": "scheduling",
+        "name": "Scheduling and execution",
+        "reference": "An operating system schedules runnable execution contexts onto available cores. Switching contexts saves and restores state. Having more threads than cores does not imply more simultaneous execution.",
+        "check": "Can many threads make progress on a single core?",
+        "bridge": "A CPU core runs an execution context at a time; scheduling can interleave many runnable tasks on fewer cores."
+      },
+      {
+        "id": "coordination",
+        "name": "Communication and synchronization",
+        "reference": "Threads communicate through shared memory using synchronization to prevent races. Processes use mechanisms such as pipes, sockets, or shared memory. Process isolation and communication overhead are trade-offs.",
+        "check": "What can go wrong when two threads increment a shared counter?",
+        "bridge": "A race occurs when the result depends on timing between operations that share state. A lock coordinates access to a critical section."
+      },
+      {
+        "id": "choice",
+        "name": "Choosing a model",
+        "reference": "Processes often offer stronger fault isolation. Threads can make shared-state coordination convenient and reduce duplication, while introducing race and deadlock risks. Workload, runtime, and failure boundaries should guide the choice.",
+        "check": "What information would you need before choosing for a CPU-heavy Python job?",
+        "bridge": "I/O-bound work spends time waiting on external systems; CPU-bound work spends it calculating. That distinction helps choose a concurrency model."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Operating Systems: Three Easy Pieces",
+        "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/"
+      },
+      {
+        "title": "Python: concurrent.futures",
+        "url": "https://docs.python.org/3/library/concurrent.futures.html"
+      }
+    ],
+    "background": "An application often needs to keep multiple tasks progressing. Processes and threads provide different execution and isolation boundaries; first distinguish concurrency from work running simultaneously.",
+    "practice": "Python offers ThreadPoolExecutor and ProcessPoolExecutor. Threads can suit overlapping I/O; processes can provide isolation and parallel Python execution in common GIL-enabled runtimes. Runtime configuration, native libraries and serialization overhead affect the choice, so measure the actual workload.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "recursion",
+    "title": "Recursion",
+    "category": "Programming fundamentals",
+    "difficulty": "beginner",
+    "prompt": "Explain recursion to a junior developer. Include how it stops and where it is useful.",
+    "compare": "Compare a recursive and an iterative solution to traversing a tree.",
+    "core": "A recursive function solves a problem by calling itself on smaller or simpler instances, until it reaches a case it can solve directly.",
+    "example": "To count nodes in a tree, return zero for an empty tree. Otherwise return one plus the counts from the left and right subtrees. Each call handles the same kind of problem at a smaller scale.",
+    "nuance": "A base case is insufficient if recursive calls never reach it. Repeated subproblems can cause exponential work; memoization can help. Deep recursion can exhaust the call stack, and tail-call optimization is language dependent.",
+    "concepts": [
+      {
+        "id": "base",
+        "name": "Base case",
+        "reference": "A base case returns an answer without further recursion. It defines the smallest solvable instances and provides a stopping point.",
+        "check": "What is the base case when counting nodes in an empty tree?",
+        "bridge": "A recursive definition needs an answer it can return immediately; for an empty tree, a node count is zero."
+      },
+      {
+        "id": "progress",
+        "name": "Progress toward termination",
+        "reference": "Each recursive step must make progress toward a base case, such as decreasing a nonnegative size or moving into a smaller subtree. A circular call without progress does not terminate.",
+        "check": "Why does calling f(n) again from f(n) usually fail to solve the problem?",
+        "bridge": "Having a stopping case is not enough: every chain of calls must actually approach it."
+      },
+      {
+        "id": "stack",
+        "name": "Call stack",
+        "reference": "Each active call has an execution frame holding local state and a return location. Results unwind through pending calls. Recursion uses stack space proportional to the maximum active call depth.",
+        "check": "What happens after the deepest recursive call returns?",
+        "bridge": "The call stack remembers work that is waiting for another call to finish, including where execution should resume."
+      },
+      {
+        "id": "cost",
+        "name": "Time and space trade-offs",
+        "reference": "Recursive structure can clarify trees and divide-and-conquer algorithms. Count all calls to estimate runtime and maximum simultaneous depth to estimate stack use. Equivalent iterative solutions may use an explicit stack.",
+        "check": "Why can a recursion tree have many calls but relatively small depth?",
+        "bridge": "Total work and maximum simultaneous memory use are different questions: many calls can occur across a wide but shallow recursion tree."
+      }
+    ],
+    "sources": [
+      {
+        "title": "MIT: Introduction to Algorithms",
+        "url": "https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/"
+      },
+      {
+        "title": "Python: recursion limit",
+        "url": "https://docs.python.org/3/library/sys.html#sys.getrecursionlimit"
+      }
+    ],
+    "background": "A folder can contain more folders, and a tree contains smaller trees. Recursion expresses that repeated shape as a function that solves smaller versions of the same problem.",
+    "practice": "Tree traversal and recursive descent parsers use recursive structure naturally. In Python, deep recursion can hit the recursion limit; an explicit stack is often preferable for unbounded input depth. Consider readability and stack usage as well as runtime.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "auth",
+    "title": "Authentication vs. authorization",
+    "category": "Networking and web development",
+    "difficulty": "beginner",
+    "prompt": "Explain authentication and authorization using a real application. What can go wrong if you confuse them?",
+    "compare": "Compare authentication and authorization in a shared document application.",
+    "core": "Authentication establishes identity. Authorization decides whether an identity may perform an action on a resource. A signed-in user is not automatically entitled to access every object.",
+    "example": "Signing in proves which user is requesting a document. A separate permission check verifies whether that user may read this particular document. Changing a document ID in a URL must not bypass that check.",
+    "nuance": "Client-side hiding is not access control. Authorization must be enforced by the server on relevant requests. Tokens can carry claims, but possession, validity, scope, audience, and expiry still need appropriate checks.",
+    "concepts": [
+      {
+        "id": "identity",
+        "name": "Establishing identity",
+        "reference": "Authentication checks evidence such as a password, passkey, or trusted token to establish a principal. It answers who is making a request, with the assurance supported by that method.",
+        "check": "What does a successful login prove, and what does it not prove?",
+        "bridge": "An account is a stored identity. A principal is the user or service whose identity the system has established from evidence."
+      },
+      {
+        "id": "permissions",
+        "name": "Resource permissions",
+        "reference": "Authorization evaluates whether a principal may take a specific action on a particular resource. Role-based and attribute-based policies are common; ownership and tenant boundaries also matter.",
+        "check": "Why is checking that a user is logged in insufficient for reading another user's file?",
+        "bridge": "Knowing a person’s identity does not tell you whether a file is theirs. Policies connect an identity, action and resource; roles group privileges, while attributes describe conditions."
+      },
+      {
+        "id": "enforcement",
+        "name": "Server-side enforcement",
+        "reference": "Enforce access checks on the trusted server boundary for each protected operation. Deny by default and grant only required privileges. A frontend restriction cannot prevent a direct HTTP request.",
+        "check": "How would you test for a missing object-level permission check?",
+        "bridge": "The browser is controlled by its user, who can send requests directly. In a test environment, have user A request user B’s private document ID and verify the server denies it."
+      },
+      {
+        "id": "tokens",
+        "name": "Sessions and tokens",
+        "reference": "A session identifier or token lets subsequent requests carry identity evidence. Validate it appropriately and then apply authorization policy. A token format alone, including JWT, does not make an application secure.",
+        "check": "Can a valid token belong to a user who lacks access to a resource?",
+        "bridge": "After login, how does the next request identify the user without asking for a password again? A server can keep session state and give the browser an identifier, commonly sent in a cookie. That identifier is a kind of token; other token designs carry signed claims. Identity evidence still does not grant access to every resource."
+      }
+    ],
+    "sources": [
+      {
+        "title": "OWASP: Authorization Cheat Sheet",
+        "url": "https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html"
+      },
+      {
+        "title": "OpenID Foundation: How OpenID Connect works",
+        "url": "https://openid.net/developers/how-connect-works/"
+      }
+    ],
+    "background": "A shared document app needs two answers: who is making this request, and may that person read this particular document? Login helps establish identity; permission checks still have to decide access.",
+    "practice": "In modern identity integrations, OpenID Connect (OIDC) adds authentication to OAuth 2.0; OAuth 2.0 provides delegated access to protected APIs. Providers such as Auth0 implement these flows. Your application still enforces resource and tenant permissions. These are common choices, not requirements for every login system.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "embeddings",
+    "title": "Embeddings",
+    "category": "AI and machine learning",
+    "difficulty": "intermediate",
+    "prompt": "Explain what an embedding represents and how you would use it for semantic search.",
+    "compare": "Compare embedding search with exact keyword search.",
+    "core": "An embedding represents an object as a vector whose geometry is learned for a task. Useful embeddings place related objects near each other according to a chosen similarity measure.",
+    "example": "Encode support documents and a question with a compatible model. Rank document vectors by similarity to the question vector. Return the highest-ranking passages, then check whether they actually answer the question.",
+    "nuance": "Similarity is not truth or relevance certainty. Embeddings can miss exact numbers, negation, or rare terms. Vectors from different models are generally not directly comparable. Hybrid search can combine lexical and semantic evidence.",
+    "concepts": [
+      {
+        "id": "vectors",
+        "name": "Learned vector representations",
+        "reference": "An embedding model maps an input to numerical coordinates. Training objectives shape which relationships become close in the representation space. Individual dimensions are not generally human-readable labels.",
+        "check": "Why is an embedding more than a manually assigned list of topic tags?",
+        "bridge": "A vector is an ordered list of numbers. An embedding model learns a mapping into that numerical space from its training objective."
+      },
+      {
+        "id": "similarity",
+        "name": "Similarity metrics",
+        "reference": "Cosine similarity compares direction; dot product depends on both direction and magnitude unless normalized; Euclidean distance measures geometric distance. The metric should match the model and indexing setup.",
+        "check": "Why does normalization affect the relationship between cosine similarity and dot product?",
+        "bridge": "To rank vectors, you need a rule for closeness. Direction and length are different geometric properties."
+      },
+      {
+        "id": "retrieval",
+        "name": "Encoding and retrieval",
+        "reference": "Store document vectors and encode queries in a compatible space. Nearest-neighbor retrieval finds candidate matches; approximate indexes trade some recall for speed and scale.",
+        "check": "Why should you not mix vectors from unrelated embedding models in one search space?",
+        "bridge": "Encoding is the conversion from text into vectors. Retrieval compares a new query with a previously encoded collection."
+      },
+      {
+        "id": "limitations",
+        "name": "Retrieval limitations",
+        "reference": "A high similarity score is a ranking signal, not proof that a passage is correct or answers the query. Evaluate retrieval on representative questions and consider lexical matching, reranking, and metadata filters.",
+        "check": "How could a highly similar passage still be the wrong answer?",
+        "bridge": "Similarity answers whether representations are close according to a model; it cannot independently establish whether a statement is true."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Sentence Transformers: Semantic Search",
+        "url": "https://www.sbert.net/examples/sentence_transformer/applications/semantic-search/README.html"
+      },
+      {
+        "title": "Faiss: Similarity search",
+        "url": "https://github.com/facebookresearch/faiss"
+      }
+    ],
+    "background": "A keyword search may miss two sentences that express the same idea differently. Embeddings provide a learned numerical representation that can support searching by related meaning.",
+    "practice": "Sentence Transformers can encode queries and passages for semantic search; Faiss can search collections of vectors. Match the embedding model and similarity metric to the task. Evaluate retrieval quality using real questions rather than treating a similarity score as factual confidence.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "overfitting",
+    "title": "Overfitting",
+    "category": "AI and machine learning",
+    "difficulty": "beginner",
+    "prompt": "Explain why a model can perform well in training and poorly on new data. How would you detect it?",
+    "compare": "Compare overfitting and underfitting using training and validation results.",
+    "core": "Overfitting occurs when a model captures training-specific patterns that do not generalize. The goal is useful performance on new examples, not merely low training error.",
+    "example": "A deep decision tree memorizes noise in a small dataset. It gets almost every training label right but fails on held-out examples. Limiting tree depth can increase training error while improving validation performance.",
+    "nuance": "A validation gap is evidence to investigate, not a complete diagnosis. Distribution shift and leakage can distort evaluation. Repeatedly tuning against a test set makes it part of the development process.",
+    "concepts": [
+      {
+        "id": "generalize",
+        "name": "Generalization gap",
+        "reference": "Compare performance on training data and independent held-out data using a relevant metric. Very good training performance with substantially worse validation performance can indicate overfitting.",
+        "check": "Why is training accuracy alone inadequate?",
+        "bridge": "A held-out set contains examples excluded from fitting. Comparing it with the training set reveals how performance changes on unseen cases."
+      },
+      {
+        "id": "capacity",
+        "name": "Capacity and data",
+        "reference": "Flexible models can fit complex patterns and noise. Overfitting depends on capacity, data quantity and quality, training procedure, and task. More parameters do not automatically imply poor generalization.",
+        "check": "How might more representative data help?",
+        "bridge": "Capacity is how flexible a model is. Representative examples help distinguish recurring patterns from accidental details in a small sample."
+      },
+      {
+        "id": "regularize",
+        "name": "Regularization",
+        "reference": "Regularization discourages overly specific solutions through constraints or penalties. Weight decay, dropout, simpler models, data augmentation, and early stopping can help in appropriate settings.",
+        "check": "Why might stopping training early improve held-out performance?",
+        "bridge": "A model needs constraints as well as flexibility; regularization discourages some overly specific ways of fitting the training examples."
+      },
+      {
+        "id": "evaluation",
+        "name": "Sound evaluation",
+        "reference": "Fit preprocessing only on training data, use appropriate splits, tune using validation, and reserve a test set for final evaluation. Temporal or grouped data may require non-random splitting to avoid leakage.",
+        "check": "Why can scaling the full dataset before splitting leak information?",
+        "bridge": "Data leakage occurs when information unavailable at prediction time influences fitting or model selection, making evaluation look better than deployment."
+      }
+    ],
+    "sources": [
+      {
+        "title": "scikit-learn: Common pitfalls",
+        "url": "https://scikit-learn.org/stable/common_pitfalls.html"
+      }
+    ],
+    "background": "A model can perform beautifully on examples it has seen and poorly on new ones. Keep separate data for evaluation so success means more than remembering the training set.",
+    "practice": "In scikit-learn, a Pipeline helps fit preprocessing only on training folds during cross-validation. Choose time-aware or group-aware splits when samples are related. Use validation to select settings and keep the test set for a final check.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "caching",
+    "title": "Caching",
+    "category": "Engineering decisions and trade-offs",
+    "difficulty": "intermediate",
+    "prompt": "Explain when a cache helps, what makes it difficult, and how you would choose an expiration strategy.",
+    "compare": "Compare cache-aside with reading directly from the source of truth.",
+    "core": "A cache stores reusable results closer to where they are needed. It trades additional state and potential staleness for lower latency or less repeated work.",
+    "example": "For a product page, first check a cache keyed by product ID. On a miss, read the database and populate the cache. An update must invalidate or refresh relevant entries, or readers may see the old price.",
+    "nuance": "Caching can increase complexity without helping a low-reuse workload. Cache keys must include relevant context, including access boundaries. Expiration bounds some staleness but does not guarantee consistency.",
+    "concepts": [
+      {
+        "id": "hit",
+        "name": "Hits, misses, and reuse",
+        "reference": "A hit returns a cached value; a miss requires the original computation or read. Hit rate, miss cost, and cache overhead determine whether the cache helps. Cold caches initially miss frequently.",
+        "check": "What workload would have a poor hit rate?",
+        "bridge": "The origin is the authoritative source or expensive computation. A cache is an additional place to look before paying that cost."
+      },
+      {
+        "id": "invalidation",
+        "name": "Invalidation and freshness",
+        "reference": "Cached copies can become stale when source data changes. Time-to-live, event-driven invalidation, and write-through updates offer different freshness and complexity trade-offs.",
+        "check": "What can a user see between a database update and cache invalidation?",
+        "bridge": "Once there are two copies of a value, an update can make them disagree. Freshness is how current the cached answer must be."
+      },
+      {
+        "id": "eviction",
+        "name": "Capacity and eviction",
+        "reference": "Caches have finite capacity. Eviction policies such as LRU decide which entries to discard. Expiration concerns freshness; eviction concerns space, though both can remove entries.",
+        "check": "How does eviction differ from expiration?",
+        "bridge": "Memory is finite. Removing an entry to make space is a different decision from removing it because it is too old."
+      },
+      {
+        "id": "failures",
+        "name": "Stampedes and failure modes",
+        "reference": "Many simultaneous misses for a popular key can overload the origin. Request coalescing, expiration jitter, or serving stale data temporarily can help. A cache outage should have a considered fallback.",
+        "check": "What happens if a popular key expires during peak traffic?",
+        "bridge": "A popular result can attract many requests at once. If its cached copy disappears, those requests may all reach the origin together."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Redis: Client-side caching",
+        "url": "https://redis.io/docs/latest/develop/reference/client-side-caching/"
+      },
+      {
+        "title": "Redis: Cache-aside",
+        "url": "https://redis.io/tutorials/howtos/solutions/microservices/caching/"
+      }
+    ],
+    "background": "If many requests need the same expensive result, recomputing it wastes work. A cache keeps a reusable copy, but now the system must manage the copy’s age and storage.",
+    "practice": "Redis is often used as an application cache. In cache-aside, the application checks the cache, reads the source on a miss, and stores the result. A time-to-live (TTL) limits age; invalidation handles updates. Cache usefulness depends on reuse and acceptable staleness.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "memory-management",
+    "title": "Memory management",
+    "category": "Operating systems",
+    "difficulty": "intermediate",
+    "prompt": "Explain stack and heap memory, object lifetimes, and what a memory leak means.",
+    "compare": "Compare manual memory management with garbage collection.",
+    "core": "Memory management allocates storage for program data and reclaims it when no longer needed. Languages and runtimes offer different ways to express ownership and object lifetime.",
+    "example": "A function's local execution frame can disappear when it returns, while an object referenced elsewhere may live longer. Keeping every request in a global list retains those objects even if the program never uses them again.",
+    "nuance": "Garbage collection does not prevent all memory leaks: reachable but unwanted objects remain allocated. Virtual memory is an abstraction over physical storage, not unlimited free RAM. Stack and heap details vary by language and compiler.",
+    "concepts": [
+      {
+        "id": "stack-heap",
+        "name": "Stack and heap",
+        "reference": "The call stack typically holds active function frames with structured lifetimes. Heap allocation supports data whose lifetimes need not follow call nesting. Actual placement can be optimized by the compiler.",
+        "check": "Why might an object need to outlive the function that created it?",
+        "bridge": "A function call needs temporary execution state, while some objects must survive after the function returns. These lifetimes motivate different storage arrangements."
+      },
+      {
+        "id": "lifetime",
+        "name": "Ownership and lifetime",
+        "reference": "Safe access requires an object to remain valid for the duration of use. Manual freeing, reference counting, tracing garbage collection, and ownership systems manage lifetime differently.",
+        "check": "What is a use-after-free error?",
+        "bridge": "An object’s lifetime runs from its creation until its storage is no longer valid. Access after that point can become a use-after-free bug."
+      },
+      {
+        "id": "gc",
+        "name": "Garbage collection",
+        "reference": "Tracing collectors identify objects reachable from roots and reclaim unreachable storage. Collection consumes work and may introduce pauses. Reference counting has different costs and needs help for cycles.",
+        "check": "Why can a reachable object still constitute a memory leak from the application's perspective?",
+        "bridge": "Reachability asks whether an object can still be reached from active roots such as stacks and globals. An accidentally retained reference can keep unwanted data alive."
+      },
+      {
+        "id": "virtual",
+        "name": "Virtual memory",
+        "reference": "Each process uses virtual addresses mapped by the operating system to physical memory or backing storage. This supports isolation and flexible mapping; accessing unavailable pages can cause faults and expensive paging.",
+        "check": "Why can a large virtual address space still coexist with memory pressure?",
+        "bridge": "The addresses a program uses are virtual. The operating system maps them to physical storage, allowing isolation without requiring every possible address to occupy RAM."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Operating Systems: Three Easy Pieces",
+        "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/"
+      },
+      {
+        "title": "Rust: Ownership",
+        "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"
+      }
+    ],
+    "background": "A running program creates objects and needs to know how long each must remain usable. Memory management connects allocation, access and eventual reclamation.",
+    "practice": "Rust expresses ownership and borrowing in its type system; Java uses garbage collection. Both still require attention to retained data and memory pressure. A heap profiler helps identify what remains allocated; managed memory does not make leaks impossible.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "load-balancing",
+    "title": "Load balancing",
+    "category": "Software engineering and architecture",
+    "difficulty": "intermediate",
+    "prompt": "Explain how a load balancer distributes requests and what changes when servers fail.",
+    "compare": "Compare round-robin and least-connections balancing for uneven request durations.",
+    "core": "A load balancer routes work across multiple backends to improve capacity and availability. It needs a policy for selecting a backend and a way to avoid unhealthy instances.",
+    "example": "Three API servers sit behind a balancer. Round-robin rotates requests across them. If one server fails health checks, new requests go to the remaining servers, which must have enough capacity for the extra load.",
+    "nuance": "Balancing does not make application state magically consistent. Retries can duplicate non-idempotent work. The balancer can also become a failure point unless the deployment accounts for it.",
+    "concepts": [
+      {
+        "id": "routing",
+        "name": "Routing policies",
+        "reference": "Round-robin distributes request counts; least-connections considers active connections; weighted policies account for unequal capacity. A good policy depends on workload characteristics and available signals.",
+        "check": "Why can equal request counts still create unequal server load?",
+        "bridge": "A routing policy is the rule for choosing an instance. Equal request counts do not necessarily mean equal work."
+      },
+      {
+        "id": "health",
+        "name": "Health checks and failure",
+        "reference": "Health checks identify backends that should not receive new work. Failures may happen between checks, so timeouts and carefully bounded retries are still necessary.",
+        "check": "Does passing a health check guarantee the next request succeeds?",
+        "bridge": "An instance can still accept connections while being unable to serve useful responses, so a health signal must match the service’s needs."
+      },
+      {
+        "id": "state",
+        "name": "Session state",
+        "reference": "A request may reach a different backend each time. Shared or externalized session state simplifies this. Sticky sessions route a client consistently but can complicate failover and distribution.",
+        "check": "What happens to in-memory login state when the next request reaches a different server?",
+        "bridge": "If a user’s next request reaches a different instance, state kept only in the first instance may be missing."
+      },
+      {
+        "id": "layers",
+        "name": "Network and application layers",
+        "reference": "Transport-layer balancers route connections using network information. Application-layer balancers can inspect HTTP attributes such as host or path. This changes routing flexibility, TLS handling, and overhead.",
+        "check": "Which kind of balancer could route /images differently from /api?",
+        "bridge": "A layer-4 decision uses transport information such as IP addresses and ports; layer-7 routing can examine HTTP hostnames and paths."
+      }
+    ],
+    "sources": [
+      {
+        "title": "NGINX: HTTP load balancing",
+        "url": "https://nginx.org/en/docs/http/load_balancing.html"
+      }
+    ],
+    "background": "When one server cannot handle all traffic—or must be replaced without stopping the service—requests can be distributed across several instances. A load balancer decides where each request goes.",
+    "practice": "NGINX can distribute HTTP requests using round-robin or least-connected policies and detect failed upstreams. Engineers also consider timeouts, retries, draining and shared session state. A load balancer improves routing and resilience; it cannot repair an overloaded shared database.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "rag",
+    "title": "Retrieval-augmented generation",
+    "category": "AI and machine learning",
+    "difficulty": "advanced",
+    "prompt": "Walk through a RAG system from user question to answer. Explain where it can fail.",
+    "compare": "Compare retrieval-augmented generation with fine-tuning for changing factual knowledge.",
+    "core": "RAG retrieves relevant external material and includes it in a language model's context to help generate an answer. It separates access to a knowledge source from the model's learned parameters.",
+    "example": "A support assistant retrieves passages from current product documentation, inserts them beside the question, and asks the model to answer with references. If retrieval returns the wrong version, a fluent answer can still be wrong.",
+    "nuance": "RAG does not guarantee correctness, and a citation is not proof of support. Retrieved text is untrusted content and should not override application instructions. Access control must filter retrieval before private material reaches the model.",
+    "concepts": [
+      {
+        "id": "ingestion",
+        "name": "Ingestion and chunking",
+        "reference": "Prepare source content into retrievable units while preserving useful boundaries and metadata. Chunk size and overlap affect context completeness, ranking, and cost. Updates must keep the retrieval corpus current.",
+        "check": "What can go wrong if a chunk splits a crucial qualification from a claim?",
+        "bridge": "Ingestion prepares source documents for search. A chunk is a passage small enough to retrieve and fit into a model’s context while preserving useful meaning."
+      },
+      {
+        "id": "retrieval",
+        "name": "Retrieval and ranking",
+        "reference": "Search retrieves candidate passages using lexical, dense-vector, or hybrid methods. Filters enforce scope and access; reranking may improve ordering. Retrieval quality limits what evidence the generator sees.",
+        "check": "Why might keyword matching help where embedding similarity fails?",
+        "bridge": "Retrieval finds candidates; ranking orders them for relevance. The model cannot use a crucial fact that never reaches its input."
+      },
+      {
+        "id": "generation",
+        "name": "Grounded generation",
+        "reference": "The generator receives the question and retrieved context with instructions to use supported evidence and acknowledge missing information. Context windows are limited, so selection matters. The model can still add unsupported claims.",
+        "check": "Why is providing a source passage insufficient to guarantee a faithful answer?",
+        "bridge": "The generator receives a question plus retrieved passages. Sources guide the answer but do not force every generated statement to be supported."
+      },
+      {
+        "id": "evaluation",
+        "name": "Evaluating the pipeline",
+        "reference": "Evaluate retrieval relevance and recall separately from answer correctness, faithfulness, and usefulness. Inspect whether cited passages actually support claims. Test missing-answer cases and adversarial retrieved instructions.",
+        "check": "How would you distinguish a retrieval failure from a generation failure?",
+        "bridge": "End-to-end answer quality has several failure points: source coverage, retrieval relevance, and whether the generated answer faithfully uses the evidence."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Lewis et al.: Retrieval-Augmented Generation",
+        "url": "https://arxiv.org/abs/2005.11401"
+      },
+      {
+        "title": "Sentence Transformers: Retrieve and rerank",
+        "url": "https://www.sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html"
+      }
+    ],
+    "background": "A language model’s parameters do not contain every private or recent document. Retrieval-augmented generation supplies selected source passages at question time so the answer can use that evidence.",
+    "practice": "A practical RAG system may combine keyword and embedding retrieval, rerank candidates, and provide citations. Sentence Transformers can produce retrieval embeddings; an LLM generates the answer from selected context. Evaluate retrieval misses separately from unsupported generation, and enforce document access permissions before returning context.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "software-testing",
+    "title": "Software testing",
+    "category": "Software engineering and architecture",
+    "difficulty": "beginner",
+    "prompt": "Explain how you would test a small application and what different kinds of tests tell you.",
+    "compare": "Compare unit, integration, and end-to-end tests for a checkout flow.",
+    "core": "Tests exercise behavior and compare observed outcomes with expectations. Different test boundaries reveal different kinds of failures; a passing suite is evidence, not proof that software is bug-free.",
+    "example": "For a checkout flow, unit tests verify discount rules; integration tests verify order persistence and inventory changes; an end-to-end test verifies the user can complete checkout through the UI. Test doubles isolate external dependencies where appropriate.",
+    "nuance": "Coverage reports show executed code, not the quality of assertions. Tests that repeat implementation details can pass alongside the same bug. Favor observable behavior, realistic boundaries, and clear failure signals.",
+    "concepts": [
+      {
+        "id": "levels",
+        "name": "Test boundaries",
+        "reference": "Unit tests exercise a small piece in isolation, integration tests exercise cooperating components, and end-to-end tests exercise a complete user path. Boundaries trade speed and diagnosis for realism.",
+        "check": "Which test could catch a mismatch between a database schema and application queries?",
+        "bridge": "A test boundary determines how much real code and infrastructure participate. A unit check and a complete browser flow answer different questions."
+      },
+      {
+        "id": "assertions",
+        "name": "Behavior and assertions",
+        "reference": "A useful test states an expected behavior and checks an observable result. Include normal, boundary, and failure cases. An assertion should be capable of failing for a meaningful regression.",
+        "check": "Why is merely calling a function without checking its result often insufficient?",
+        "bridge": "An assertion compares an observed outcome with an expectation; successful execution alone does not establish correct behavior."
+      },
+      {
+        "id": "doubles",
+        "name": "Test doubles",
+        "reference": "Fakes, stubs, and mocks stand in for dependencies to make tests deterministic or focused. They can diverge from real services, so contract or integration checks are still needed.",
+        "check": "What can mocked API tests miss?",
+        "bridge": "A test double stands in for a dependency. It helps control failure cases, but may behave differently from the real service."
+      },
+      {
+        "id": "confidence",
+        "name": "Confidence and limitations",
+        "reference": "Tests sample behavior and cannot generally prove absence of bugs. Flaky tests reduce trust. Risk-based selection emphasizes critical behavior while maintaining fast, understandable feedback.",
+        "check": "Why does 100 percent line coverage not guarantee correctness?",
+        "bridge": "Tests sample inputs and behaviors rather than proving the absence of bugs. Coverage can reveal unexecuted code without showing whether assertions are meaningful."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Google Testing Blog: Test sizes",
+        "url": "https://testing.googleblog.com/2010/12/test-sizes.html"
+      },
+      {
+        "title": "pytest: Fixtures",
+        "url": "https://docs.pytest.org/en/stable/how-to/fixtures.html"
+      },
+      {
+        "title": "Playwright: Writing tests",
+        "url": "https://playwright.dev/docs/writing-tests"
+      }
+    ],
+    "background": "A change can appear correct in one example while breaking another path. Tests make expected behavior repeatable so you can check changes with less reliance on memory or manual clicking.",
+    "practice": "pytest fixtures prepare test data and dependencies; browser tools such as Playwright exercise user flows. Teams combine fast focused tests with integration checks at real boundaries. Mocking everything can hide integration failures; running only slow end-to-end tests makes diagnosis difficult.",
+    "reviewed_at": "2026-10-27"
+  },
+  {
+    "id": "consistency",
+    "title": "Consistency vs. availability",
+    "category": "Engineering decisions and trade-offs",
+    "difficulty": "advanced",
+    "prompt": "Explain what a distributed system must decide during a network partition. Use a concrete example.",
+    "compare": "Compare strong and eventual consistency for a collaborative application.",
+    "core": "When a network partition prevents replicas from coordinating, a system cannot guarantee both linearizable behavior and a successful response to every request under the CAP definitions. It must choose how particular operations behave during that failure.",
+    "example": "Two regions lose contact while selling the final ticket. Accepting sales in both regions preserves responsiveness but can oversell. Rejecting or delaying some sales protects a single consistent outcome while sacrificing availability for those requests.",
+    "nuance": "CAP is not a blanket choose-two shopping rule. Partition behavior, latency, durability, and business invariants are distinct concerns. Systems can make different choices for different operations.",
+    "concepts": [
+      {
+        "id": "partition",
+        "name": "Network partitions",
+        "reference": "A partition prevents some nodes from communicating even while they remain running. Delays and lost messages complicate distinguishing failure from slowness.",
+        "check": "Can two healthy servers still be separated by a partition?",
+        "bridge": "A partition is a failure of communication between parts of a distributed system, even if the machines themselves still run."
+      },
+      {
+        "id": "consistency",
+        "name": "Linearizable consistency",
+        "reference": "Linearizability makes operations appear to occur atomically in a single order consistent with real time. A completed write must be visible to a later read in that model.",
+        "check": "What would a stale read violate under linearizability?",
+        "bridge": "Linearizability means an operation appears to take effect at one point between its call and response, respecting real-time order."
+      },
+      {
+        "id": "availability",
+        "name": "Availability under partition",
+        "reference": "CAP availability requires every request to a non-failing node to eventually receive a successful operation response. Refusing a write to protect an invariant sacrifices that availability for the operation.",
+        "check": "Why is returning an error not the availability guarantee used in CAP?",
+        "bridge": "CAP availability means every request to a non-failing node eventually gets a response; it is not a percentage uptime promise."
+      },
+      {
+        "id": "tradeoff",
+        "name": "Business-level trade-offs",
+        "reference": "Choose behavior based on invariants and failure costs. A social feed may tolerate temporarily stale reads; unique reservations may require coordination or constrained allocation. Reconciliation needs explicit rules.",
+        "check": "Which operations in a shopping app can tolerate stale state, and which cannot?",
+        "bridge": "Business rules determine the cost of disagreement. Reserving one remaining seat is different from reading a slightly stale product description."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Gilbert and Lynch: Brewer's conjecture",
+        "url": "https://groups.csail.mit.edu/tds/papers/Gilbert/Brewer2.pdf"
+      },
+      {
+        "title": "etcd: API guarantees",
+        "url": "https://etcd.io/docs/v3.5/learning/api_guarantees/"
+      }
+    ],
+    "background": "A replicated service keeps data on several machines. If those machines cannot communicate, they may disagree about the latest value, forcing decisions about what answers remain safe to return.",
+    "practice": "etcd exposes linearizable operations by default, while allowing serializable reads that may be stale. Engineers choose guarantees per operation: a cached catalog can tolerate old data more easily than a unique reservation. Name the required behavior and failure assumptions rather than simply saying “CAP means pick two.”",
+    "reviewed_at": "2026-10-27"
+  }
+]
