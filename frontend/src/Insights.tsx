@@ -2,22 +2,34 @@ import { useRef, useState } from "react";
 import { api, errorText, post, timeLabel } from "./api";
 import { ErrorNotice } from "./components";
 import { processing } from "./Practice";
-import type { Attempt } from "./types";
+import { renderMarkdown } from "./markdown";
+import { lineLabel } from "./markers";
+import type { Attempt, MessagePart } from "./types";
 
 /** Re-run the current coach on a saved attempt. The earlier analysis is archived first. */
 export function Rereview({
   attempt,
   onRefresh,
   label = "Re-review with the new coach",
+  historyOnly = false,
 }: {
   attempt: Attempt;
   onRefresh: () => Promise<void>;
   label?: string;
+  historyOnly?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [history, setHistory] = useState<
-    { id: number; created_at: string; attempt: Attempt }[] | null
+    | {
+        id: number;
+        created_at: string;
+        attempt: Attempt & {
+          review_message?: string;
+          review_parts?: MessagePart[];
+        };
+      }[]
+    | null
   >(null);
   async function run() {
     setBusy(true);
@@ -41,20 +53,24 @@ export function Rereview({
   }
   return (
     <div className="rereview">
-      <p className="small muted">
-        The earlier review is archived first. Your recording, transcript and
-        review schedule stay unchanged.
-      </p>
+      {!historyOnly && (
+        <p className="small muted">
+          The earlier review is archived first. Your recording, transcript and
+          review schedule stay unchanged.
+        </p>
+      )}
       <div className="actions">
-        <button
-          className="button secondary small"
-          disabled={busy || processing(attempt)}
-          onClick={() => void run()}
-        >
-          {busy ? "Starting…" : label}
-        </button>
+        {!historyOnly && (
+          <button
+            className="button secondary small"
+            disabled={busy || processing(attempt)}
+            onClick={() => void run()}
+          >
+            {busy ? "Starting…" : label}
+          </button>
+        )}
         <button className="text-button" onClick={() => void loadHistory()}>
-          View previous analyses
+          {historyOnly ? "View previous reviews" : "View previous analyses"}
         </button>
       </div>
       {error && <ErrorNotice message={error} />}
@@ -66,7 +82,34 @@ export function Rereview({
           <summary>
             Saved before re-review · {new Date(h.created_at).toLocaleString()}
           </summary>
-          <p className="preserve">{h.attempt.transcript}</p>
+          {h.attempt.analysis?.passes?.writer.model && (
+            <p className="small muted">
+              Review written by {h.attempt.analysis.passes.writer.model}
+            </p>
+          )}
+          {h.attempt.review_message && (
+            <div className="archived-review">
+              {renderMarkdown(
+                (
+                  h.attempt.review_parts ?? [
+                    { type: "text" as const, text: h.attempt.review_message },
+                  ]
+                ).map<MessagePart>((part) =>
+                  part.type === "text"
+                    ? part
+                    : {
+                        type: "text",
+                        text: `${lineLabel(part.line_id, part.start)}${part.quote ? ` “${part.quote}”` : ""}`,
+                      },
+                ),
+                () => {},
+              )}
+            </div>
+          )}
+          <details>
+            <summary>Transcript for this version</summary>
+            <p className="preserve">{h.attempt.transcript}</p>
+          </details>
           {h.attempt.assessment?.summary && (
             <p>{h.attempt.assessment.summary}</p>
           )}

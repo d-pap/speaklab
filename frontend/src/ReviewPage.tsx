@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { PanelLeftOpen, X } from "lucide-react";
-import { api, errorText, post, put } from "./api";
+import { errorText, post } from "./api";
 import { CoachChat } from "./CoachChat";
 import { FillerDetails, ReadingLevel, VocalFoundations } from "./Insights";
 import { ErrorNotice } from "./components";
@@ -8,7 +8,7 @@ import { AcousticPanel, AttemptStatus } from "./Practice";
 import { isTooShort, reviewStructure, ReviewTab } from "./ReviewTab";
 import { TranscriptEditor, TranscriptTab } from "./TranscriptTab";
 import { VocalVariation } from "./VocalVariation";
-import type { Attempt, Session } from "./types";
+import type { Attempt, Thread } from "./types";
 
 type Tab = "transcript" | "review" | "measurements";
 const TABS: [Tab, string][] = [
@@ -83,30 +83,29 @@ function NoteBox({
   );
 }
 
+/** One attempt of a topic thread: its transcript, review and measurements, and its own chat.
+ * Works for any attempt number; the previous attempt is the one numbered just before it. */
 export function ReviewPage({
-  session,
+  thread,
   attemptNumber,
-  onSession,
+  onRefresh,
+  onRecordAgain,
 }: {
-  session: Session;
-  attemptNumber: 1 | 2;
-  onSession: (s: Session) => void;
+  thread: Thread;
+  attemptNumber: number;
+  onRefresh: () => Promise<void>;
+  /** Offered only when the server allows replacing this (too-short, latest) attempt. */
+  onRecordAgain?: () => void;
 }) {
-  const attempt = session.attempts.find((a) => a.number === attemptNumber);
-  const previous =
-    attemptNumber === 2
-      ? session.attempts.find((a) => a.number === 1)
-      : undefined;
+  const attempt = thread.attempts.find((a) => a.number === attemptNumber);
+  const previous = thread.attempts.find((a) => a.number === attemptNumber - 1);
   const [chosen, setChosen] = useState<Tab | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [stageError, setStageError] = useState("");
   const [highlight, setHighlight] = useState<{ id: string; tick: number }>({
     id: "",
     tick: 0,
   });
-  const refresh = useCallback(async () => {
-    onSession(await api<Session>(`/sessions/${session.id}`));
-  }, [onSession, session.id]);
+  const refresh = onRefresh;
   const onRef = useCallback((lineId: string) => {
     setChosen("transcript");
     setHighlight((h) => ({ id: lineId, tick: h.tick + 1 }));
@@ -114,35 +113,10 @@ export function ReviewPage({
   }, []);
   if (!attempt) return null;
   const tab: Tab = chosen ?? (hasReview(attempt) ? "review" : "transcript");
-  const locked = !!session.completed_at;
-  // Only a too-short attempt 1 may be recorded again; the backend enforces the same rule.
-  const canRecordAgain =
-    attemptNumber === 1 &&
-    session.stage === "review1" &&
-    !locked &&
-    isTooShort(attempt);
-  async function recordAgain() {
-    setStageError("");
-    try {
-      onSession(
-        await put<Session>(`/sessions/${session.id}/stage`, {
-          stage: "record1",
-        }),
-      );
-    } catch (e) {
-      setStageError(errorText(e));
-    }
-  }
-  const showNote =
-    attempt.note_state === "pending" && !isTooShort(attempt) && !locked;
+  const showNote = attempt.note_state === "pending" && !isTooShort(attempt);
   return (
     <div className={`review-page ${sheetOpen ? "sheet-open" : ""}`}>
-      <div className="review-heading">
-        <span className="eyebrow">Attempt {attemptNumber} · Review</span>
-        <h1>{session.topic.title}</h1>
-      </div>
       <AttemptStatus attempt={attempt} onRefresh={refresh} />
-      {stageError && <ErrorNotice message={stageError} />}
       <button
         className="button secondary sheet-toggle"
         onClick={() => setSheetOpen(true)}
@@ -152,7 +126,7 @@ export function ReviewPage({
       <div className="review-columns">
         <div className="review-left">
           <div className="sheet-head">
-            <strong>{session.topic.title}</strong>
+            <strong>{thread.topic.title}</strong>
             <button
               className="icon-button"
               aria-label="Close transcript and review"
@@ -189,9 +163,7 @@ export function ReviewPage({
                   highlighted={highlight.id || null}
                   highlightTick={highlight.tick}
                 />
-                {!locked && (
-                  <TranscriptEditor attempt={attempt} onRefresh={refresh} />
-                )}
+                <TranscriptEditor attempt={attempt} onRefresh={refresh} />
               </>
             ) : tab === "review" ? (
               <ReviewTab
@@ -199,9 +171,7 @@ export function ReviewPage({
                 previous={previous}
                 onRef={onRef}
                 onRefresh={refresh}
-                onRecordAgain={
-                  canRecordAgain ? () => void recordAgain() : undefined
-                }
+                onRecordAgain={isTooShort(attempt) ? onRecordAgain : undefined}
               />
             ) : (
               <>
@@ -209,7 +179,7 @@ export function ReviewPage({
                   <summary>
                     Voice measurements (pace, pitch, volume, pauses)
                   </summary>
-                  <VocalVariation attempt={attempt} style={session.style} />
+                  <VocalVariation attempt={attempt} style={attempt.style} />
                   <AcousticPanel
                     metrics={attempt.acoustics}
                     duration={attempt.duration}
@@ -225,7 +195,7 @@ export function ReviewPage({
         <div className="review-right">
           {showNote && <NoteBox attempt={attempt} onRefresh={refresh} />}
           <CoachChat
-            session={session}
+            thread={thread}
             attemptNumber={attemptNumber}
             onRef={onRef}
             onRefresh={refresh}

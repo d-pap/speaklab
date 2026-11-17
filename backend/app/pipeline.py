@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import coach, db, memory, models, progress, transcript, voice
+from . import coach, db, feedback, llm, memory, models, progress, threads, transcript, voice
 from .audio import acoustic_features, delivery_suggestions, transcript_metrics
 from .curriculum import prompt, topic_for
 from .speech import speech_observations, vocal_foundations
@@ -38,50 +38,47 @@ def submit_writer(attempt_id: str):
 
 
 def after_review_written(attempt_id: str) -> None:
-    """Run after attempt 2's review is final: that review completes the session."""
-    attempt = db.one("SELECT session_id, number FROM attempts WHERE id=?", (attempt_id,))
-    if attempt and attempt["number"] == 2:
-        complete_session(attempt["session_id"])
+    """Reschedule the topic's spaced review from this attempt's technical results.
 
-
-def complete_session(session_id: str) -> None:
-    """Finish a session from attempt 2's technical result and schedule the spaced review. Idempotent.
-    The session ends at review2, the one stage a completed session can still be viewed in."""
-    session = db.one("SELECT * FROM sessions WHERE id=?", (session_id,))
-    if not session or session["completed_at"]:
+    Once per attempt (retries, transcript edits and re-reviews don't schedule it again), and only
+    for the thread's latest attempt. An attempt without concept results, such as a too-short one,
+    never reaches here with results and leaves the schedule alone.
+    """
+    attempt = db.one(
+        "SELECT a.*, s.topic_id FROM attempts a JOIN sessions s ON s.id=a.session_id WHERE a.id=?",
+        (attempt_id,),
+    )
+    if not attempt or attempt["scheduled_at"]:
         return
-    attempt = db.one("SELECT * FROM attempts WHERE session_id=? AND number=2", (session_id,))
-    if not attempt:
+    latest = db.one("SELECT MAX(number) AS number FROM attempts WHERE session_id=?", (attempt["session_id"],))
+    if attempt["number"] != latest["number"]:
         return
     score = progress.mastery(progress.concept_results(attempt))
+    if score is None:
+        return
     recall = progress.derived_recall(score)
-    previous = db.one(
-        "SELECT r.*, s.completed_at AS last_completed_at FROM reviews r JOIN sessions s ON s.id=r.last_session_id WHERE r.topic_id=?",
-        (session["topic_id"],),
-    )
+    previous = db.one("SELECT * FROM reviews WHERE topic_id=?", (attempt["topic_id"],))
+    if previous:
+        # For the same-day cap in progress.schedule: when the latest earlier attempt that scheduled
+        # this topic was recorded. Next attempts open the next day, so this rarely caps anything.
+        earlier = db.one(
+            "SELECT created_at FROM attempts WHERE session_id=? AND id<>? AND scheduled_at IS NOT NULL "
+            "ORDER BY number DESC LIMIT 1",
+            (attempt["session_id"], attempt_id),
+        )
+        previous["last_completed_at"] = earlier["created_at"] if earlier else None
     interval, repetitions, due = progress.schedule(previous, recall, score)
     with db.connect() as conn:
         claimed = conn.execute(
-            "UPDATE sessions SET completed_at=?, recall=?, review_due=?, stage='review2' "
-            "WHERE id=? AND completed_at IS NULL",
-            (db.now(), recall, due, session_id),
+            "UPDATE attempts SET scheduled_at=? WHERE id=? AND scheduled_at IS NULL", (db.now(), attempt_id)
         )
         if claimed.rowcount:
             conn.execute(
-                "INSERT INTO reviews(topic_id,interval_days,repetitions,due,last_session_id) VALUES(?,?,?,?,?) ON CONFLICT(topic_id) DO UPDATE SET interval_days=excluded.interval_days,repetitions=excluded.repetitions,due=excluded.due,last_session_id=excluded.last_session_id",
-                (session["topic_id"], interval, repetitions, due, session_id),
+                "INSERT INTO reviews(topic_id,interval_days,repetitions,due,last_session_id) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(topic_id) DO UPDATE SET interval_days=excluded.interval_days,"
+                "repetitions=excluded.repetitions,due=excluded.due,last_session_id=excluded.last_session_id",
+                (attempt["topic_id"], interval, repetitions, due, attempt["session_id"]),
             )
-
-
-def complete_legacy_sessions() -> None:
-    """At startup: complete sessions migrated from the old `compare` stage. Their attempt 2 has
-    only a legacy assessment, so no new review will ever be written to complete them."""
-    for row in db.all_rows(
-        "SELECT s.id FROM sessions s JOIN attempts a ON a.session_id=s.id AND a.number=2 "
-        "WHERE s.stage='review2' AND s.completed_at IS NULL "
-        "AND a.assessment IS NOT NULL AND a.analysis IS NULL"
-    ):
-        complete_session(row["id"])
 
 
 # Stored state
@@ -184,8 +181,9 @@ def _measure(attempt: dict, session: dict, errors: dict) -> tuple[dict | None, s
     if text and "transcription" not in errors:
         metrics = {**(metrics or {}), **transcript_metrics(text, attempt["duration"], segments)}
         metrics.update(speech_observations(text, attempt["duration"], segments))
-        metrics["suggestions"] = delivery_suggestions(metrics, session["style"])
-        metrics["vocal_foundations"] = vocal_foundations(metrics, session["style"])
+        style = threads.attempt_settings(attempt, session)["style"]
+        metrics["suggestions"] = delivery_suggestions(metrics, style)
+        metrics["vocal_foundations"] = vocal_foundations(metrics, style)
         db.execute("UPDATE attempts SET acoustics=? WHERE id=?", (json.dumps(metrics), attempt_id))
     return metrics, text, segments
 
@@ -223,7 +221,7 @@ def _analyse(attempt: dict, session: dict, metrics: dict | None, text: str, segm
         return analysis
 
     topic = topic_for(session["topic_id"])
-    question = prompt(topic, session["prompt_kind"])
+    question = prompt(topic, threads.attempt_settings(attempt, session)["prompt_kind"])
 
     def run_memory():
         result = memory.fold_in()
@@ -299,9 +297,6 @@ def process(attempt_id: str):
         # Finalize before any hand-off: the writer may run inline and sets its own status.
         status = _final_status(attempt_id, errors, current)
     log.info("analysis_finished", extra={"attempt_id": attempt_id, "components_failed": list(errors)})
-    if analysis is not None and (analysis["review"] or {}).get("too_short"):
-        # No writer phase for a too-short attempt, but attempt 2 still completes the session.
-        after_review_written(attempt_id)
     if start_writer:
         submit_writer(attempt_id)
     elif timer_delay is not None:
@@ -388,6 +383,30 @@ def sweep_note_deadlines() -> None:
 # Phase 2
 
 
+def _previous_attempt(attempt: dict) -> tuple[dict | None, dict | None]:
+    """The previous attempt's review on the same thread, and both questions when its question
+    type differs from this attempt's."""
+    if attempt["number"] < 2:
+        return None, None
+    before = db.one(
+        "SELECT * FROM attempts WHERE session_id=? AND number=?", (attempt["session_id"], attempt["number"] - 1)
+    )
+    if not before:
+        return None, None
+    session = db.one("SELECT * FROM sessions WHERE id=?", (attempt["session_id"],))
+    review = (json.loads(before["analysis"]) if before["analysis"] else {}).get("review")
+    kind = threads.attempt_settings(attempt, session)["prompt_kind"]
+    previous_kind = threads.attempt_settings(before, session)["prompt_kind"]
+    change = None
+    if kind != previous_kind:
+        topic = topic_for(session["topic_id"])
+        change = {
+            "previous_question": prompt(topic, previous_kind),
+            "question": prompt(topic, kind),
+        }
+    return review, change
+
+
 def write(attempt_id: str):
     attempt, analysis = _load(attempt_id)
     if not attempt or attempt["note_state"] == "pending" or not _prerequisites_done(analysis):
@@ -402,31 +421,31 @@ def write(attempt_id: str):
     try:
         lines = json.loads(attempt["lines"])
         notes = memory.current_notes()["content"]
+        previous_review, question_change = _previous_attempt(attempt)
         if not analysis["review"]:
-            previous = None
-            if attempt["number"] == 2:
-                first = db.one(
-                    "SELECT analysis FROM attempts WHERE session_id=? AND number=1", (attempt["session_id"],)
-                )
-                previous = (json.loads(first["analysis"]) if first and first["analysis"] else {}).get("review")
             analysis["review"], writer["model"] = coach.review_structure_pass(
                 analysis["technical"],
                 analysis["communication"],
                 analysis["timing"],
                 notes,
                 attempt["learner_note"],
-                previous,
+                previous_review,
+                question_change,
             )
             _save(attempt_id, analysis)  # the structure survives a failed message
-        text, model_used = coach.review_message_pass(
-            lines,
-            analysis["technical"],
-            analysis["communication"],
-            analysis["timing"],
-            analysis["review"],
-            notes,
-            attempt["learner_note"],
-        )
+        with llm.capture_text_calls() as calls:
+            text, model_used = coach.review_message_pass(
+                lines,
+                analysis["technical"],
+                analysis["communication"],
+                analysis["timing"],
+                analysis["review"],
+                notes,
+                attempt["learner_note"],
+                question_change,
+            )
+        session = db.one("SELECT * FROM sessions WHERE id=?", (attempt["session_id"],))
+        context = feedback.generation_context({**attempt, "analysis": json.dumps(analysis)}, session, calls)
         warning = coach.call_state.warning  # thread-local: read in the thread that ran the pass
         with db.connect() as conn:
             conn.execute(
@@ -434,8 +453,10 @@ def write(attempt_id: str):
                 (attempt["session_id"], attempt["number"]),
             )
             conn.execute(
-                "INSERT INTO messages(session_id,role,content,created_at,attempt_number,kind) VALUES(?,?,?,?,?,?)",
-                (attempt["session_id"], "assistant", text, db.now(), attempt["number"], "review"),
+                "INSERT INTO messages(session_id,role,content,created_at,attempt_number,kind,model,generation_context) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (attempt["session_id"], "assistant", text, db.now(), attempt["number"], "review", model_used,
+                 json.dumps(context)),
             )
         writer.update(status="done", model=model_used, error=None, warning=warning)
         written = True

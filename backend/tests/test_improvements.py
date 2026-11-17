@@ -1,7 +1,7 @@
 import sqlite3
 
 import httpx
-from conftest import create, upload
+from conftest import upload
 
 from app import db, models, pipeline
 from app.curriculum import CATALOG, TOPICS
@@ -96,7 +96,7 @@ def test_whisper_verbatim_parameters_and_finite_timestamps(monkeypatch, tmp_path
 
 
 def test_failed_retranscription_keeps_text_and_analysis_until_new_text_arrives(client, wav_bytes, monkeypatch):
-    a = upload(client, create(client), wav_bytes)
+    a = upload(client, wav_bytes)
     before = db.attempt_public(db.one("SELECT * FROM attempts WHERE id=?", (a["id"],)))
     monkeypatch.setattr(
         models, "transcribe", lambda *args: (_ for _ in ()).throw(models.ServiceUnavailable("Offline"))

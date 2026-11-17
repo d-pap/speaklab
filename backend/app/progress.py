@@ -35,7 +35,7 @@ def mastery(assessment: dict | None) -> float | None:
 
 
 def derived_recall(mastery: float | None) -> str:
-    """Recall inferred from attempt 2: the learner no longer rates themselves."""
+    """Recall inferred from an attempt's concept results: the learner no longer rates themselves."""
     if mastery is not None and mastery >= 0.8:
         return "good"
     if mastery is not None and mastery >= 0.5:

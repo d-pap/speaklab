@@ -3,9 +3,9 @@
 Usage: .venv/bin/python scripts/smoke-inference.py cold.wav learned.wav report.json
 Uses a temporary database; never creates entries in normal practice history.
 
-It drives only the current pipeline: record attempt 1, send a learner note, wait for the
-passes and the review, chat once through the SSE endpoint, record attempt 2, skip its note
-and wait again. The report lists, per attempt, each pass's status, model and seconds, the
+It drives only the current pipeline on one topic thread: record attempt 1, send a learner
+note, wait for the passes and the review, chat once through the SSE endpoint, record attempt 2,
+skip its note and wait again. Attempt 2's review compares with attempt 1's. The report lists, per attempt, each pass's status, model and seconds, the
 review structure, the first 1,500 characters of the review message and the chat reply.
 """
 import json
@@ -13,6 +13,7 @@ import logging
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -25,16 +26,31 @@ PASSES = ("memory", "technical", "communication", "writer")
 FINISHED = {"done", "failed", "skipped"}
 POLL_SECONDS = 0.5
 TIMEOUT_SECONDS = 900
+TOPIC = "hash-maps"
 CHAT_QUESTION = "What would a senior engineer say?"
 NOTE = "I felt rushed near the end and wasn't sure about the collision part."
 
 
-def attempt_of(client: TestClient, sid: str, number: int) -> dict:
-    detail = client.get(f"/api/sessions/{sid}").json()
-    return next(a for a in detail["attempts"] if a["number"] == number)
+def thread(client: TestClient) -> dict:
+    response = client.get(f"/api/topics/{TOPIC}/thread")
+    response.raise_for_status()
+    return response.json()
 
 
-def wait_for_review(client: TestClient, sid: str, number: int, started: float) -> tuple[dict, dict]:
+def attempt_of(client: TestClient, number: int) -> dict:
+    return next(a for a in thread(client)["attempts"] if a["number"] == number)
+
+
+def open_next_attempt(sid: str) -> None:
+    """The next attempt opens the day after the latest one. The harness records both in one
+    sitting, so it moves the thread's attempts back a day in its temporary database. This
+    bypasses the next-day rule on purpose; the rule itself is covered by unit tests."""
+    for row in db.all_rows("SELECT id, created_at FROM attempts WHERE session_id=?", (sid,)):
+        earlier = datetime.fromisoformat(row["created_at"]) - timedelta(days=1)
+        db.execute("UPDATE attempts SET created_at=? WHERE id=?", (earlier.isoformat(), row["id"]))
+
+
+def wait_for_review(client: TestClient, number: int, started: float) -> tuple[dict, dict]:
     """Poll until the attempt is idle and its writer finished (or a pass failed).
 
     Pass seconds come from polling: first time a pass is seen running to the first time it is
@@ -42,7 +58,7 @@ def wait_for_review(client: TestClient, sid: str, number: int, started: float) -
     first_running: dict[str, float] = {}
     seconds: dict[str, float | None] = {name: None for name in PASSES}
     while True:
-        attempt = attempt_of(client, sid, number)
+        attempt = attempt_of(client, number)
         now = time.monotonic()
         passes = (attempt["analysis"] or {}).get("passes", {})
         for name in PASSES:
@@ -111,33 +127,28 @@ def run(cold: Path, learned: Path) -> dict:
         settings.data_dir = Path(directory)
         settings.serve_frontend = False
         with TestClient(app, headers={"X-SpeakLab-Client": "1"}) as client:
-            created = client.post("/api/sessions", json={"topic_id": "hash-maps"})
-            created.raise_for_status()
-            sid = created.json()["id"]
+            sid = None
             for number, path in enumerate((cold, learned), start=1):
                 if number == 2:
-                    # Attempt 2 opens the next day. The harness runs both in one sitting, so it
-                    # opens the stage by moving attempt2_after into the past in its temporary
-                    # database. This bypasses the next-day rule on purpose; the rule itself is
-                    # covered by unit tests, not here.
-                    db.execute("UPDATE sessions SET attempt2_after='2000-01-01' WHERE id=?", (sid,))
-                    client.put(f"/api/sessions/{sid}/stage", json={"stage": "record2"}).raise_for_status()
+                    open_next_attempt(sid)
                 started = time.monotonic()
-                client.post(
-                    f"/api/sessions/{sid}/attempts/{number}",
+                uploaded = client.post(
+                    f"/api/topics/{TOPIC}/attempts",
                     files={"file": (path.name, path.read_bytes(), "audio/wav")},
-                ).raise_for_status()
+                )
+                uploaded.raise_for_status()
+                sid = uploaded.json()["session_id"]  # the thread is created with attempt 1
                 # Attempt 1 gets a written note, attempt 2 a skip; both are picked up by phase 1
                 # or the writer, whichever is running when they arrive.
                 note = {"text": NOTE} if number == 1 else {"skip": True}
-                attempt_id = attempt_of(client, sid, number)["id"]
+                attempt_id = uploaded.json()["id"]
                 client.post(f"/api/attempts/{attempt_id}/note", json=note).raise_for_status()
-                attempt, seconds = wait_for_review(client, sid, number, started)
+                attempt, seconds = wait_for_review(client, number, started)
                 passes = (attempt["analysis"] or {}).get("passes", {})
                 review_message = next(
                     (
                         m["content"]
-                        for m in client.get(f"/api/sessions/{sid}").json()["messages"]
+                        for m in thread(client)["messages"]
                         if m["kind"] == "review" and m["attempt_number"] == number
                     ),
                     None,
@@ -173,9 +184,10 @@ def run(cold: Path, learned: Path) -> dict:
                     print(json.dumps({"chat_seconds": report["chat"]["seconds"]}), flush=True)
                     if report["chat"]["error"]:
                         return report
-            final = client.get(f"/api/sessions/{sid}").json()
-            report["session_completed"] = bool(final["completed_at"])
-            report["review_due"] = final["review_due"]
+            final = thread(client)
+            report["attempt_count"] = len(final["attempts"])
+            report["recording"] = final["recording"]
+            report["review_due"] = (db.one("SELECT due FROM reviews WHERE topic_id=?", (TOPIC,)) or {}).get("due")
             report["success"] = True
     with httpx.Client(trust_env=False, timeout=10) as http:
         report["loaded_models"] = http.get(settings.ollama_url + "/api/ps").json()

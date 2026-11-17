@@ -26,12 +26,22 @@ export async function api<T>(
   if (!response.ok) throw await failure(response);
   return response.json() as Promise<T>;
 }
+/** A refused request, with the HTTP status so callers can treat a 404 or 409 calmly. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
 async function failure(response: Response) {
   const data = await response.json().catch(() => ({}));
-  return new Error(
+  return new ApiError(
     typeof data.detail === "string"
       ? data.detail
       : `The request could not be completed (${response.status}). Check your input and try again.`,
+    response.status,
   );
 }
 /** The chat request was refused or never reached the server, so the question wasn't stored. */
@@ -40,7 +50,7 @@ export class ChatNotSent extends Error {}
 /** Send a chat message and stream the coach's reply. Resolves with the stored reply. */
 export async function streamChat(
   sessionId: string,
-  attempt: 1 | 2,
+  attempt: number,
   message: string,
   onDelta: (text: string) => void,
 ): Promise<Message> {

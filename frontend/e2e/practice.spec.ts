@@ -149,7 +149,9 @@ function wav(): Buffer {
   return b;
 }
 
-test("complete offline core loop with real API, audio processing, persistence, and review", async ({
+// Runs against the real backend on the e2e ports, so the thread GET and the upload are checked
+// with the shapes the server actually returns. Each run practises one unpractised topic.
+test("picking a new topic records attempt 1 and lands on the topic page", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -162,19 +164,63 @@ test("complete offline core loop with real API, audio processing, persistence, a
     path: "test-results/home-desktop.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Begin your practice" }).click();
+  const suggested = page.getByRole("region", { name: "Suggested topics" });
+  const title = await suggested.getByRole("heading", { level: 2 }).innerText();
+  await suggested.getByRole("button", { name: /Begin your practice/ }).click();
+  await expect(page).toHaveURL(/#\/topic\/[a-z0-9-]+$/);
+  const topicId = /#\/topic\/([a-z0-9-]+)$/.exec(page.url())![1];
   await expect(
     page.getByRole("button", { name: "Start recording", exact: true }),
   ).toBeVisible();
+  await expect(page.getByRole("heading", { name: title })).toBeVisible();
   await expect(page.getByText("CURATED REFERENCES")).toHaveCount(0);
-  const sessionUrl = page.url();
+  // Picking a topic creates nothing: the real thread is still empty.
+  const before = await (
+    await page.request.get(`/api/topics/${topicId}/thread`)
+  ).json();
+  expect(before.session_id).toBeNull();
+  expect(before.attempts).toEqual([]);
+  expect(before.recording).toEqual({
+    can_record: true,
+    reason: null,
+    replace_number: null,
+    next_number: 1,
+  });
+  await page
+    .getByRole("combobox", { name: "Delivery intention" })
+    .selectOption("Thoughtful teacher");
   await page
     .locator("input[type=file]")
     .setInputFiles({ name: "test.wav", mimeType: "audio/wav", buffer: wav() });
-  await expect(
-    page.getByRole("button", { name: "Save & explore feedback" }),
-  ).toBeVisible();
+  // The upload goes through to the real server; the route only reads the form it sends.
+  let body = "";
+  await page.route(`**/api/topics/${topicId}/attempts`, (route) => {
+    body = route.request().postDataBuffer()?.toString("latin1") ?? "";
+    return route.continue();
+  });
+  const uploaded = page.waitForResponse(
+    (r) =>
+      r.request().method() === "POST" &&
+      r.url().endsWith(`/api/topics/${topicId}/attempts`),
+  );
   await page.getByRole("button", { name: "Save & explore feedback" }).click();
+  const response = await uploaded;
+  expect(response.status()).toBe(201);
+  const names = [...body.matchAll(/; name="([^"]+)"/g)].map((m) => m[1]);
+  // The question type was left alone, so it is not sent; style and length are.
+  expect(names.sort()).toEqual(["duration", "file", "style"]);
+  const saved = await response.json();
+  expect(saved).toMatchObject({
+    number: 1,
+    prompt_kind: "Concept explanation",
+    style: "Thoughtful teacher",
+    target_duration: 120,
+  });
+  await expect(page).toHaveURL(new RegExp(`#/topic/${topicId}\\?attempt=1$`));
+  await expect(page.getByRole("button", { name: "Attempt 1" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   // Whisper is unreachable in this test, so the recording is kept and no review is written.
   await expect(
     page.getByText("Your recording is safe. Some analysis is unavailable."),
@@ -204,26 +250,48 @@ test("complete offline core loop with real API, audio processing, persistence, a
     path: "test-results/review-offline-desktop.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: /Try again$/ }).click();
-  await expect(page.getByRole("alert").first()).toContainText(
-    "Attempt 2 opens tomorrow so it tests what you remember.",
+  // The server decides when the next attempt opens.
+  await expect(page.getByText("Next attempt opens tomorrow")).toBeVisible();
+  await expect(page.getByRole("button", { name: "New attempt" })).toHaveCount(
+    0,
   );
+  const after = await (
+    await page.request.get(`/api/topics/${topicId}/thread`)
+  ).json();
+  expect(after.attempts.map((a: { number: number }) => a.number)).toEqual([1]);
+  expect(after.recording).toMatchObject({
+    can_record: false,
+    reason: "Next attempt opens tomorrow",
+    next_number: 2,
+  });
   await page.reload();
-  expect(page.url()).toBe(sessionUrl);
+  await expect(page).toHaveURL(new RegExp(`#/topic/${topicId}\\?attempt=1$`));
   await expect(
     page
       .getByRole("tabpanel", { name: "Transcript" })
       .locator("mark.filler")
       .first(),
   ).toHaveText(/um/i);
-  await page.getByRole("button", { name: "Done for today" }).click();
+  await page.getByRole("button", { name: "Today", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Today’s practice" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Practice history", exact: true }).click();
-  await expect(
-    page.getByText("In progress", { exact: true }).first(),
-  ).toBeVisible();
+    page.getByRole("region", { name: "Pick up where you left off" }),
+  ).toContainText(title);
+  // The topic just recorded is practised now, so it is no longer suggested.
+  const nextSuggestion = suggested.getByRole("heading", { level: 2 });
+  await expect(nextSuggestion).toBeVisible();
+  await expect(nextSuggestion).not.toHaveText(title);
+  await page
+    .getByRole("button", { name: "Practice history", exact: true })
+    .click();
+  const row = page
+    .locator("table.history-table tbody tr")
+    .filter({ hasText: title });
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("1 attempt");
+  await expect(row).toContainText("Next attempt opens tomorrow");
+  await row.getByRole("button", { name: title }).click();
+  await expect(page).toHaveURL(new RegExp(`#/topic/${topicId}$`));
+  await expect(page.getByRole("button", { name: "Attempt 1" })).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -231,7 +299,7 @@ test("real browser recorder supports pause, resume, stop, and local playback", a
   page,
 }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Begin your practice" }).click();
+  await page.getByRole("button", { name: /Begin your practice/ }).click();
   await page
     .getByRole("button", { name: "Start recording", exact: true })
     .click();
@@ -265,7 +333,7 @@ test("microphone denial gives a useful recovery path", async ({ page }) => {
     };
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Begin your practice" }).click();
+  await page.getByRole("button", { name: /Begin your practice/ }).click();
   await page
     .getByRole("button", { name: "Start recording", exact: true })
     .click();
@@ -282,7 +350,7 @@ test("unsaved audio survives a canceled browser navigation", async ({
   page,
 }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Begin your practice" }).click();
+  await page.getByRole("button", { name: /Begin your practice/ }).click();
   await page.locator("input[type=file]").setInputFiles({
     name: "unsaved.wav",
     mimeType: "audio/wav",
@@ -298,7 +366,7 @@ test("unsaved audio survives a canceled browser navigation", async ({
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "Today", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Begin your practice" }),
+    page.getByRole("button", { name: /Begin your practice/ }),
   ).toBeVisible();
 });
 
@@ -308,7 +376,7 @@ test("mobile layout, filters, settings, and theme remain usable", async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await expect(
-    page.getByRole("button", { name: "Begin your practice" }),
+    page.getByRole("button", { name: /Begin your practice/ }),
   ).toBeVisible();
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth),
@@ -324,6 +392,8 @@ test("mobile layout, filters, settings, and theme remain usable", async ({
   await page
     .getByRole("combobox", { name: "Topic difficulty" })
     .selectOption("advanced");
+  // Practised topics join the library once included.
+  await page.getByRole("button", { name: "Include practised" }).click();
   await expect(
     page.getByRole("button", { name: /Backpropagation/ }),
   ).toBeVisible();

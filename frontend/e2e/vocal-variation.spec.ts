@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { attempt, thread } from "./fixtures";
 
 // Explicit test measurements and synthetic audio; never used in production analysis.
 function silentWav(seconds: number) {
@@ -88,45 +89,38 @@ async function openMeasurements(page: Page) {
       })
       .click();
 }
-const makeSession = (acoustics: object, transcriptSource = "whisper") => ({
-  id: "vocal-test",
-  topic_id: "auth",
-  topic: { id: "auth", title: "Authentication vs. authorization" },
-  created_at: "2026-10-28T12:00:00Z",
-  duration: 180,
-  style: "Conversational",
-  prompt_kind: "Concept explanation",
-  prompt: "Explain the difference.",
-  stage: "review1",
-  completed_at: null,
-  messages: [],
-  attempts: [
-    {
-      id: "vocal-attempt",
-      number: 1,
-      duration: 125,
-      created_at: "2026-10-28T12:00:00Z",
-      transcript: "An explanation for the UI test.",
-      transcript_source: transcriptSource,
-      transcription_version: 2,
-      status: "ready",
-      errors: {},
-      assessment: null,
-      acoustics,
-      segments: [],
-      audio_url: "/vocal-test.wav",
-    },
-  ],
-});
+// GET /api/topics/{id}/thread with one attempt, using the real response keys.
+const makeSession = (acoustics: object, transcriptSource = "whisper") =>
+  thread({
+    attempts: [
+      attempt({
+        id: "vocal-attempt",
+        session_id: "vocal-test",
+        duration: 125,
+        created_at: "2026-10-28T12:00:00Z",
+        transcript: "An explanation for the UI test.",
+        transcript_source: transcriptSource,
+        acoustics,
+        segments: [],
+        lines: null,
+        tokens: null,
+        analysis: null,
+        target_duration: 180,
+        audio_url: "/vocal-test.wav",
+      }),
+    ],
+    session_id: "vocal-test",
+    messages: [],
+  });
 
 test("vocal foundations show temporal contrast, exclude short trailing fragments, and play marked passages", async ({
   page,
 }) => {
-  await page.route("**/api/sessions/vocal-test", (route) =>
+  await page.route("**/api/topics/auth/thread", (route) =>
     route.fulfill({ json: makeSession(metrics) }),
   );
   await serveRangedAudio(page, 125);
-  await page.goto("/#/session/vocal-test");
+  await page.goto("/#/topic/auth");
   await openMeasurements(page);
   const view = page.getByRole("region", {
     name: "Vocal variation for attempt 1",
@@ -193,7 +187,7 @@ test("vocal foundations show temporal contrast, exclude short trailing fragments
 test("unaligned transcripts and missing pitch never produce a fabricated variation grade", async ({
   page,
 }) => {
-  await page.route("**/api/sessions/vocal-test", (route) =>
+  await page.route("**/api/topics/auth/thread", (route) =>
     route.fulfill({
       json: makeSession(
         {
@@ -217,7 +211,7 @@ test("unaligned transcripts and missing pitch never produce a fabricated variati
   await page.route("**/vocal-test.wav", (route) =>
     route.fulfill({ contentType: "audio/wav", body: silentWav(1) }),
   );
-  await page.goto("/#/session/vocal-test");
+  await page.goto("/#/topic/auth");
   await openMeasurements(page);
   const view = page.getByRole("region", {
     name: "Vocal variation for attempt 1",
@@ -243,7 +237,7 @@ test("unaligned transcripts and missing pitch never produce a fabricated variati
 test("measurements keep filler detail, vocal foundations and reading level, collapsed", async ({
   page,
 }) => {
-  await page.route("**/api/sessions/vocal-test", (route) =>
+  await page.route("**/api/topics/auth/thread", (route) =>
     route.fulfill({
       json: makeSession({
         ...metrics,
@@ -286,7 +280,7 @@ test("measurements keep filler detail, vocal foundations and reading level, coll
     }),
   );
   await serveRangedAudio(page, 10);
-  await page.goto("/#/session/vocal-test");
+  await page.goto("/#/topic/auth");
   await page.getByRole("tab", { name: "Measurements" }).click();
   // Everything starts collapsed.
   await expect(page.getByText("Measured spread: 2 semitones.")).toBeHidden();

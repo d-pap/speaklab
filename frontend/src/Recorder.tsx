@@ -10,20 +10,28 @@ import {
   Download,
   AudioLines,
 } from "lucide-react";
-import { api, errorText, timeLabel } from "./api";
+import { errorText, timeLabel } from "./api";
 import { ErrorNotice, PrivateNote } from "./components";
-import type { Session } from "./types";
+import type { Attempt } from "./types";
 
+/** Records or imports one attempt. The caller shows the topic and question in `brief` and
+ * decides where the audio goes (`onUpload`); `onSaved` runs once the recording is no longer
+ * unsaved, so the caller can navigate away without a leave warning. */
 export function Recorder({
-  session,
   number,
+  duration,
+  style,
+  onUpload,
   onSaved,
   onDirty,
   brief,
 }: {
-  session: Session;
   number: number;
-  onSaved: () => Promise<void>;
+  /** Target speaking time in seconds. */
+  duration: number;
+  style: string;
+  onUpload: (audio: Blob) => Promise<Attempt>;
+  onSaved: (attempt: Attempt) => void;
   onDirty: (value: boolean) => void;
   brief?: ReactNode;
 }) {
@@ -77,11 +85,11 @@ export function Recorder({
     const id = window.setInterval(() => {
       const value =
         accumulated.current + (performance.now() - started.current) / 1000;
-      setElapsed(Math.min(value, session.duration));
-      if (value >= session.duration) stop();
+      setElapsed(Math.min(value, duration));
+      if (value >= duration) stop();
     }, 100);
     return () => clearInterval(id);
-  }, [state, session.duration]);
+  }, [state, duration]);
   useEffect(() => {
     if (state === "idle") return;
     const guard = (event: BeforeUnloadEvent) => {
@@ -218,14 +226,9 @@ export function Recorder({
     setSaving(true);
     setError("");
     try {
-      const form = new FormData();
-      form.append("file", blob, "recording");
-      await api(`/sessions/${session.id}/attempts/${number}`, {
-        method: "POST",
-        body: form,
-      });
+      const saved = await onUpload(blob);
       onDirty(false);
-      await onSaved();
+      onSaved(saved);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -235,13 +238,6 @@ export function Recorder({
   const active = state === "recording" || state === "paused";
   return (
     <div className="record-page">
-      <div className="record-heading">
-        <span className="eyebrow">
-          ATTEMPT {number} · {number === 1 ? "FROM MEMORY" : "MAKE IT YOUR OWN"}
-        </span>
-        <h1>{session.topic.title}</h1>
-        <p>{session.prompt}</p>
-      </div>
       {brief}
       <section
         className={`record-card ${state === "recording" ? "is-recording" : ""}`}
@@ -262,14 +258,14 @@ export function Recorder({
         </div>
         <div
           className="timer"
-          aria-label={`${timeLabel(Math.max(0, session.duration - elapsed))} remaining`}
+          aria-label={`${timeLabel(Math.max(0, duration - elapsed))} remaining`}
         >
-          {timeLabel(Math.max(0, session.duration - elapsed))}
+          {timeLabel(Math.max(0, duration - elapsed))}
         </div>
         <p className="timer-caption">
           {state === "stopped"
             ? "Ready when you are"
-            : `${session.duration / 60} minute practice · ${session.style.toLowerCase()}`}
+            : `${duration / 60} minute practice · ${style.toLowerCase()}`}
         </p>
         <div className="waveform">
           <canvas
@@ -354,7 +350,7 @@ export function Recorder({
               ? "Saving your audio…"
               : number === 1
                 ? "Save & explore feedback"
-                : "Save & review attempt 2"}
+                : `Save & review attempt ${number}`}
             <ArrowRight size={17} />
           </button>
         ) : (

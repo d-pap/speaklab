@@ -1,252 +1,28 @@
 import { expect, test, type Page } from "@playwright/test";
-
-// Explicit UI fixtures and synthetic audio: never used by the application or saved to practice data.
-function wav(seconds = 2): Buffer {
-  const samples = 16000 * seconds;
-  const b = Buffer.alloc(44 + samples * 2);
-  b.write("RIFF");
-  b.writeUInt32LE(b.length - 8, 4);
-  b.write("WAVEfmt ", 8);
-  b.writeUInt32LE(16, 16);
-  b.writeUInt16LE(1, 20);
-  b.writeUInt16LE(1, 22);
-  b.writeUInt32LE(16000, 24);
-  b.writeUInt32LE(32000, 28);
-  b.writeUInt16LE(2, 32);
-  b.writeUInt16LE(16, 34);
-  b.write("data", 36);
-  b.writeUInt32LE(samples * 2, 40);
-  return b;
-}
-
-type Json = Record<string, unknown>;
-
-const timedLines = [
-  {
-    id: "L1",
-    start: 0,
-    end: 40,
-    text: "So the app helps people, uh, um, track their tasks.",
-  },
-  {
-    id: "L2",
-    start: 40,
-    end: 84,
-    text: "You know, the front end matters most.",
-  },
-  {
-    id: "L3",
-    start: 84,
-    end: 116,
-    text: "Because what good is an app if it is hard to use?",
-  },
-];
-
-function tokensFor(
-  lines: { id: string; start: number | null; text: string }[],
-  timed: boolean,
-) {
-  const tokens: Json[] = [];
-  for (const line of lines) {
-    const words = line.text.split(" ");
-    for (let i = 0; i < words.length; i++) {
-      const raw = words[i];
-      const start = timed && line.start != null ? line.start + i : null;
-      if (timed && line.id === "L1" && raw === "track")
-        tokens.push({ type: "pause", seconds: 0.8, line_id: "L1" });
-      if (timed && line.id === "L3" && raw === "Because")
-        tokens.push({ type: "pause", seconds: 1.6, line_id: "L3" });
-      if (raw === "uh," || raw === "um,")
-        tokens.push({
-          type: "filler",
-          text: raw.replace(",", ""),
-          line_id: line.id,
-          start,
-        });
-      else if (raw === "You" && words[i + 1] === "know,") {
-        tokens.push({
-          type: "possible_filler",
-          text: "You know",
-          line_id: line.id,
-          start,
-        });
-        i++;
-      } else tokens.push({ type: "word", text: raw, line_id: line.id, start });
-    }
-  }
-  return tokens;
-}
-
-const coreScores = [
-  ["Overall", 5.5, "A clear start that ran long before the backend."],
-  ["Clarity", 6.5, "Most sentences were easy to follow."],
-  ["Structure", 6, "The backend arrived late."],
-  ["Conciseness", 4, "The opening took most of the time."],
-  ["Technical accuracy", 7, "What you said was mostly right."],
-  ["Technical coverage", 3, "Storage and sync were not reached."],
-  ["Handling uncertainty", 6, "You named one open question."],
-] as const;
-
-const review = {
-  scores: [
-    { name: "Playfulness", score: 6.5, reason: "The aside landed." },
-    ...coreScores.map(([name, score, reason]) => ({ name, score, reason })),
-  ],
-  key_points: [
-    {
-      text: "Most of the time went before the backend.",
-      line_ids: ["L3"],
-    },
-    { text: "The playful aside landed; trim the buildup.", line_ids: ["L2"] },
-    { text: "Pick one storage option and say why.", line_ids: [] },
-  ],
-  checklist: ["Answer the question in 15 seconds", "Name 3 concrete decisions"],
-  comparison: null,
-};
-
-const technical = {
-  concepts: [
-    {
-      concept_id: "usability",
-      status: "partial",
-      line_ids: ["L3"],
-      note: "Usability came up but without an example.",
-    },
-  ],
-  corrections: [
-    {
-      line_id: "L2",
-      claim: "The front end matters most.",
-      correction: "The data model shapes the app as much as the front end.",
-      basis: "model",
-      reference_ids: [],
-      verified: false,
-    },
-  ],
-  senior_points: [
-    { point: "Start from requirements and scale.", basis: "model" },
-  ],
-};
-
-const pass = (status = "done", extra: Json = {}) => ({
-  status,
-  model: status === "done" ? "test-double" : null,
-  error: null,
-  ...extra,
-});
-
-const donePasses = () => ({
-  memory: pass(),
-  technical: pass(),
-  communication: pass(),
-  writer: pass(),
-});
-
-function attempt(overrides: Json = {}, analysisOverrides: Json = {}): Json {
-  return {
-    id: "attempt-1",
-    session_id: "review-ui",
-    number: 1,
-    created_at: "2026-11-16T12:00:00Z",
-    duration: 116,
-    transcript: timedLines.map((l) => l.text).join(" "),
-    transcript_source: "whisper",
-    transcription_version: 2,
-    segments: [],
-    acoustics: { wpm: 120, pause_count: 3, filler_count: 1 },
-    assessment: null,
-    status: "ready",
-    errors: {},
-    audio_url: "/review-audio.wav",
-    lines: timedLines,
-    tokens: tokensFor(timedLines, true),
-    learner_note: null,
-    note_state: "submitted",
-    analysis: {
-      version: 1,
-      voice_summary: [],
-      stats: {
-        duration: 116,
-        fillers: 1,
-        possible_fillers: 1,
-        pauses_over_1s: 3,
-        longest_pause: 1.6,
-      },
-      passes: donePasses(),
-      technical,
-      communication: null,
-      timing: [],
-      review,
-      ...analysisOverrides,
-    },
-    ...overrides,
-  };
-}
-
-const reviewMessage = {
-  id: 1,
-  role: "assistant",
-  content: 'Your aside landed [[L3:"what good is an app"]].',
-  created_at: "2026-11-16T12:05:00Z",
-  attempt_number: 1,
-  kind: "review",
-  parts: [
-    { type: "text", text: "Your aside landed " },
-    {
-      type: "ref",
-      line_id: "L3",
-      start: 84,
-      quote: "what good is an app",
-    },
-    { type: "text", text: ". Keep that energy." },
-  ],
-};
-
-function session(overrides: Json = {}): Json {
-  return {
-    id: "review-ui",
-    topic_id: "auth",
-    topic: {
-      id: "auth",
-      title: "Authentication vs. authorization",
-      category: "Security",
-      difficulty: "beginner",
-      prompt: "Explain the difference.",
-    },
-    created_at: "2026-11-16T12:00:00Z",
-    duration: 120,
-    style: "Conversational",
-    prompt_kind: "Concept explanation",
-    prompt: "Explain the difference between authentication and authorization.",
-    stage: "review1",
-    completed_at: null,
-    recall: null,
-    review_due: null,
-    attempts: [attempt()],
-    messages: [reviewMessage],
-    ...overrides,
-  };
-}
-
-async function serve(page: Page, state: { current: Json }) {
-  await page.route("**/api/sessions/review-ui", (route) =>
-    route.fulfill({ json: state.current }),
-  );
-  await page.route("**/review-audio.wav", (route) =>
-    route.fulfill({ body: wav(), contentType: "audio/wav" }),
-  );
-}
-
-const sse = (events: Json[]) =>
-  events.map((e) => "data: " + JSON.stringify(e) + "\n\n").join("");
+import {
+  attempt,
+  donePasses,
+  message,
+  mockLists,
+  pass,
+  review,
+  reviewMessage,
+  serve,
+  sse,
+  thread,
+  timedLines,
+  tokensFor,
+  topic,
+  type Json,
+} from "./fixtures";
 
 test("review page shows inline fillers and pauses and highlights a line from a chat time link", async ({
   page,
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await serve(page, { current: session() });
-  await page.goto("/#/session/review-ui");
+  await serve(page, { current: thread() });
+  await page.goto("/#/topic/auth");
   // The review exists, so the Review tab opens first.
   await expect(page.getByRole("tab", { name: "Review" })).toHaveAttribute(
     "aria-selected",
@@ -288,7 +64,7 @@ test("review page shows inline fillers and pauses and highlights a line from a c
 
 test("note box send and skip", async ({ page }) => {
   const state = {
-    current: session({
+    current: thread({
       attempts: [
         attempt(
           { note_state: "pending" },
@@ -305,14 +81,14 @@ test("note box send and skip", async ({ page }) => {
   await serve(page, state);
   await page.route("**/api/attempts/attempt-1/note", (route) => {
     bodies.push(route.request().postDataJSON());
-    state.current = session({
+    state.current = thread({
       attempts: [
         attempt({ note_state: bodies.at(-1)!.skip ? "skipped" : "submitted" }),
       ],
     });
     return route.fulfill({ json: attempt() });
   });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const box = page.getByRole("region", { name: "How did that go?" });
   await expect(box).toBeVisible();
   await expect(
@@ -325,7 +101,7 @@ test("note box send and skip", async ({ page }) => {
   await expect(box).toHaveCount(0);
   expect(bodies).toEqual([{ text: "I rambled at the start." }]);
 
-  state.current = session({
+  state.current = thread({
     attempts: [
       attempt(
         { note_state: "pending" },
@@ -357,7 +133,7 @@ test("failed pass shows retry and keeps transcript", async ({ page }) => {
     writer: pass("pending"),
   };
   const state = {
-    current: session({
+    current: thread({
       attempts: [attempt({ status: "partial" }, { passes, review: null })],
       messages: [],
     }),
@@ -368,7 +144,7 @@ test("failed pass shows retry and keeps transcript", async ({ page }) => {
     retried++;
     return route.fulfill({ json: { status: "pending" } });
   });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   await expect(
     page.getByText(
       "The local model could not be reached. Your recording is safe.",
@@ -394,7 +170,7 @@ test("edited transcript shows line labels instead of times", async ({
 }) => {
   const untimed = timedLines.map((l) => ({ ...l, start: null, end: null }));
   await serve(page, {
-    current: session({
+    current: thread({
       attempts: [
         attempt({
           transcript_source: "manual",
@@ -413,7 +189,7 @@ test("edited transcript shows line labels instead of times", async ({
       ],
     }),
   });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const chat = page.getByRole("region", { name: "Coach chat" });
   await chat.getByRole("button", { name: "line 3" }).click();
   const transcript = page.getByRole("tabpanel", { name: "Transcript" });
@@ -425,7 +201,7 @@ test("edited transcript shows line labels instead of times", async ({
 test("too-short attempt shows no scores", async ({ page }) => {
   const skipped = pass("skipped");
   await serve(page, {
-    current: session({
+    current: thread({
       attempts: [
         attempt(
           { note_state: "pending" },
@@ -442,9 +218,17 @@ test("too-short attempt shows no scores", async ({ page }) => {
         ),
       ],
       messages: [],
+      // The real state for a too-short latest attempt: it may be replaced.
+      recording: {
+        can_record: true,
+        reason: null,
+        replace_number: 1,
+        next_number: 1,
+      },
+      latest_checklist: [],
     }),
   });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   await expect(
     page.getByText(
       "No substantive explanation was recorded. Record again when you’re ready.",
@@ -459,7 +243,7 @@ test("too-short attempt shows no scores", async ({ page }) => {
 test("scores, key points and checklist stay in review tab while chat grows", async ({
   page,
 }) => {
-  const state = { current: session() };
+  const state = { current: thread() };
   await serve(page, state);
   const sent: Json[] = [];
   let id = 10;
@@ -500,7 +284,7 @@ test("scores, key points and checklist stay in review tab while chat grows", asy
       ]),
     });
   });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const panel = page.getByRole("tabpanel", { name: "Review" });
   await expect(
     panel.getByRole("button", { name: "Overall 5.5" }),
@@ -528,7 +312,7 @@ test("scores, key points and checklist stay in review tab while chat grows", asy
     panel.getByText("Most of the time went before the backend."),
   ).toBeVisible();
   await expect(
-    panel.getByRole("heading", { name: "For attempt 2" }),
+    panel.getByRole("heading", { name: "For next time" }),
   ).toBeVisible();
   await expect(panel.getByText("Name 3 concrete decisions")).toBeVisible();
   const before = await panel.innerText();
@@ -541,7 +325,7 @@ test("scores, key points and checklist stay in review tab while chat grows", asy
     await chat.getByRole("button", { name: "Send message" }).click();
     await expect(
       chat
-        .locator(".message.coach:not(.streaming)")
+        .locator(".message.coach:not(.streaming) .message-content")
         .filter({ hasText: new RegExp(`^Reply ${n} 0:00$`) }),
     ).toBeVisible();
     await expect(composer).toBeEnabled();
@@ -571,8 +355,8 @@ test("coach messages render headings, bold and lists, never raw HTML", async ({
       { type: "text", text: rest },
     ],
   };
-  await serve(page, { current: session({ messages: [markdownReview] }) });
-  await page.goto("/#/session/review-ui");
+  await serve(page, { current: thread({ messages: [markdownReview] }) });
+  await page.goto("/#/topic/auth");
   const chat = page.getByRole("region", { name: "Coach chat" });
   await expect(
     chat.getByRole("heading", { name: "Three priorities" }),
@@ -618,14 +402,14 @@ test("coach messages render headings, bold and lists, never raw HTML", async ({
 test("chat shows the server's refusal while the coach is busy", async ({
   page,
 }) => {
-  await serve(page, { current: session() });
+  await serve(page, { current: thread() });
   await page.route("**/api/sessions/review-ui/chat", (route) =>
     route.fulfill({
       status: 409,
       json: { detail: "The coach is already answering. Try again shortly." },
     }),
   );
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const chat = page.getByRole("region", { name: "Coach chat" });
   await chat
     .getByPlaceholder("Ask about your attempt or the topic…")
@@ -642,7 +426,7 @@ test("chat shows the server's refusal while the coach is busy", async ({
 test("a chat question survives a failed connection but not a stored one", async ({
   page,
 }) => {
-  await serve(page, { current: session() });
+  await serve(page, { current: thread() });
   let mode: "abort" | "stream-error" = "abort";
   await page.route("**/api/sessions/review-ui/chat", (route) =>
     mode === "abort"
@@ -652,7 +436,7 @@ test("a chat question survives a failed connection but not a stored one", async 
           body: sse([{ error: "The local model did not respond." }]),
         }),
   );
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const chat = page.getByRole("region", { name: "Coach chat" });
   const box = chat.getByPlaceholder("Ask about your attempt or the topic…");
   await box.fill("Why hash the key?");
@@ -674,8 +458,8 @@ test("phone width shows chat with transcript and review sheet", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await serve(page, { current: session() });
-  await page.goto("/#/session/review-ui");
+  await serve(page, { current: thread() });
+  await page.goto("/#/topic/auth");
   const chat = page.getByRole("region", { name: "Coach chat" });
   await expect(
     chat.getByPlaceholder("Ask about your attempt or the topic…"),
@@ -708,46 +492,11 @@ test("phone width shows chat with transcript and review sheet", async ({
   });
 });
 
-test("day 2 screen shows only topic, prompt and checklist", async ({
-  page,
-}) => {
-  await serve(page, { current: session({ stage: "record2" }) });
-  await page.goto("/#/session/review-ui");
-  await expect(
-    page.getByRole("heading", { name: "Authentication vs. authorization" }),
-  ).toBeVisible();
-  await expect(
-    page.getByText(
-      "Explain the difference between authentication and authorization.",
-    ),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Answer the question in 15 seconds"),
-  ).toBeVisible();
-  await expect(page.getByText("Name 3 concrete decisions")).toBeVisible();
-  await expect(
-    page.getByText("Most of the time went before the backend."),
-  ).toHaveCount(0);
-  await expect(page.getByText("Your aside landed")).toHaveCount(0);
-  await expect(page.getByText("Overall 5.5")).toHaveCount(0);
-  await expect(
-    page.getByPlaceholder("Ask about your attempt or the topic…"),
-  ).toHaveCount(0);
-  await expect(page.getByText("CURATED REFERENCES")).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "Start recording", exact: true }),
-  ).toBeVisible();
-  // The attempt 1 review stays closed while attempt 2 is being recorded.
-  await expect(page.getByRole("button", { name: /Review$/ })).toBeDisabled();
-});
-
 test("legacy attempt shows old summary and re-review button", async ({
   page,
 }) => {
   await serve(page, {
-    current: session({
-      stage: "review2",
-      completed_at: "2026-10-01T12:00:00Z",
+    current: thread({
       attempts: [
         attempt({
           number: 1,
@@ -791,7 +540,7 @@ test("legacy attempt shows old summary and re-review button", async ({
     rereviewed++;
     return route.fulfill({ json: { status: "pending" } });
   });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const panel = page.getByRole("tabpanel", { name: "Review" });
   await expect(
     panel.getByText("A clearer second explanation from the old coach."),
@@ -811,7 +560,7 @@ test("legacy attempt shows old summary and re-review button", async ({
 test("a streaming reply shows markers as an ellipsis until it is done", async ({
   page,
 }) => {
-  await serve(page, { current: session() });
+  await serve(page, { current: thread() });
   // Controllable stream: the reply pauses mid-marker until the test releases it.
   await page.addInitScript(() => {
     const original = window.fetch.bind(window);
@@ -852,7 +601,7 @@ test("a streaming reply shows markers as an ellipsis until it is done", async ({
       });
     };
   });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const chat = page.getByRole("region", { name: "Coach chat" });
   await chat
     .getByPlaceholder("Ask about your attempt or the topic…")
@@ -886,8 +635,7 @@ test("attempt 2 review shows score changes and chats about attempt 2 only", asyn
     },
   );
   const state = {
-    current: session({
-      stage: "review2",
+    current: thread({
       attempts: [attempt(), second],
       messages: [
         reviewMessage,
@@ -924,7 +672,7 @@ test("attempt 2 review shows score changes and chats about attempt 2 only", asyn
       ]),
     });
   });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const panel = page.getByRole("tabpanel", { name: "Review" });
   await expect(panel.getByText("Structure 6.0 → 8.0")).toBeVisible();
   await expect(
@@ -952,7 +700,7 @@ test("a long review keeps the page at the top on load and when the review arrive
   const long = "A long paragraph of review prose for this attempt. ".repeat(
     400,
   );
-  const waiting = session({
+  const waiting = thread({
     attempts: [
       attempt(
         { status: "processing" },
@@ -963,14 +711,14 @@ test("a long review keeps the page at the top on load and when the review arrive
   });
   const state = { current: waiting };
   await serve(page, state);
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const heading = page.getByRole("heading", {
     name: "Authentication vs. authorization",
   });
   await expect(heading).toBeInViewport();
   await expect(page.getByText("Writing your review…").first()).toBeVisible();
   // The writer finishes; polling brings the long review in.
-  state.current = session({
+  state.current = thread({
     messages: [
       {
         ...reviewMessage,
@@ -988,113 +736,7 @@ test("a long review keeps the page at the top on load and when the review arrive
   await expect(heading).toBeInViewport();
 });
 
-test("after attempt 2 the switch reaches attempt 1's review, but not while recording attempt 2", async ({
-  page,
-}) => {
-  const second = attempt(
-    { id: "attempt-2", number: 2 },
-    {
-      review: {
-        ...review,
-        key_points: [
-          { text: "Second attempt key point.", line_ids: [] },
-          ...review.key_points.slice(1),
-        ],
-        comparison: {
-          changes: [{ name: "Structure", before: 6, after: 8 }],
-          what_changed: "Clearer this time.",
-        },
-      },
-    },
-  );
-  const messages = [
-    reviewMessage,
-    {
-      ...reviewMessage,
-      id: 2,
-      attempt_number: 2,
-      content: "Attempt two review.",
-      parts: [{ type: "text", text: "Attempt two review." }],
-    },
-  ];
-  const state = {
-    current: session({
-      stage: "review2",
-      attempts: [attempt(), second],
-      messages,
-    }),
-  };
-  await serve(page, state);
-  const panel = page.getByRole("tabpanel", { name: "Review" });
-  const chat = page.getByRole("region", { name: "Coach chat" });
-  for (const completed of [null, "2026-11-17T12:00:00Z"]) {
-    state.current = { ...state.current, completed_at: completed };
-    await page.goto("/#/session/review-ui");
-    await page.reload();
-    await expect(
-      page.getByRole("button", { name: "Attempt 2" }),
-    ).toHaveAttribute("aria-pressed", "true");
-    await expect(panel.getByText("Second attempt key point.")).toBeVisible();
-    await expect(chat.getByText("Attempt two review.")).toBeVisible();
-    await page.getByRole("button", { name: "Attempt 1" }).click();
-    await expect(
-      panel.getByRole("heading", { name: "For attempt 2" }),
-    ).toBeVisible();
-    await expect(
-      panel.getByText("Most of the time went before the backend."),
-    ).toBeVisible();
-    await expect(chat.getByText("Your aside landed")).toBeVisible();
-    await expect(chat.getByText("Attempt two review.")).toHaveCount(0);
-  }
-  state.current = session({
-    stage: "record2",
-    attempts: [attempt()],
-    messages,
-  });
-  await page.reload();
-  await expect(
-    page.getByRole("button", { name: "Start recording", exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Attempt 1" })).toHaveCount(0);
-  await expect(
-    page.getByText("Most of the time went before the backend."),
-  ).toHaveCount(0);
-  await expect(page.getByText("Your aside landed")).toHaveCount(0);
-});
-
-test("the stepper offers attempt 2's recorder only before attempt 2 is saved", async ({
-  page,
-}) => {
-  const state = {
-    current: session({
-      stage: "review2",
-      attempts: [
-        attempt(),
-        attempt(
-          { id: "attempt-2", number: 2, note_state: "pending" },
-          {
-            review: null,
-            passes: { ...donePasses(), writer: pass("waiting") },
-          },
-        ),
-      ],
-    }),
-  };
-  await serve(page, state);
-  await page.goto("/#/session/review-ui");
-  const stages = page.getByRole("navigation", { name: "Practice stages" });
-  await expect(
-    stages.getByRole("button", { name: /Review again/ }),
-  ).toBeEnabled();
-  await expect(
-    stages.getByRole("button", { name: /Try again/ }),
-  ).toBeDisabled();
-  state.current = session({ stage: "review1" });
-  await page.reload();
-  await expect(stages.getByRole("button", { name: /Try again/ })).toBeEnabled();
-});
-
-test("a too-short attempt 1 can be recorded again; a too-short attempt 2 cannot", async ({
+test("a too-short latest attempt can be recorded again; an earlier one cannot", async ({
   page,
 }) => {
   const skipped = pass("skipped");
@@ -1108,30 +750,39 @@ test("a too-short attempt 1 can be recorded again; a too-short attempt 2 cannot"
       writer: skipped,
     },
   };
+  // The server allows replacing a too-short latest attempt on any day.
   const state = {
-    current: session({ attempts: [attempt({}, tooShort)], messages: [] }),
+    current: thread({
+      attempts: [attempt(), attempt({ id: "attempt-2", number: 2 }, tooShort)],
+      messages: [],
+      recording: {
+        can_record: true,
+        reason: null,
+        replace_number: 2,
+        next_number: 2,
+      },
+    }),
   };
   await serve(page, state);
-  const bodies: Json[] = [];
-  await page.route("**/api/sessions/review-ui/stage", (route) => {
-    bodies.push(route.request().postDataJSON());
-    state.current = { ...state.current, stage: "record1" };
-    return route.fulfill({ json: state.current });
-  });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
+  await expect(
+    page.getByText(
+      "No substantive explanation was recorded. Record again when you’re ready.",
+    ),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Record again" }).click();
+  await expect(page).toHaveURL(/#\/topic\/auth\/new$/);
+  await expect(page.getByText("This replaces attempt 2")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Start recording", exact: true }),
   ).toBeVisible();
-  expect(bodies).toEqual([{ stage: "record1" }]);
 
-  state.current = session({
-    stage: "review2",
-    completed_at: "2026-11-17T12:00:00Z",
-    attempts: [attempt(), attempt({ id: "attempt-2", number: 2 }, tooShort)],
+  // An earlier too-short attempt stays as it is.
+  state.current = thread({
+    attempts: [attempt({}, tooShort), attempt({ id: "attempt-2", number: 2 })],
     messages: [],
   });
-  await page.reload();
+  await page.goto("/#/topic/auth?attempt=1");
   await expect(
     page.getByText("No substantive explanation was recorded for this attempt."),
   ).toBeVisible();
@@ -1157,10 +808,10 @@ test("earlier versions stay viewable after re-review and on normal attempts", as
       model: "old-model",
     },
   });
-  const state = { current: session({ attempts: [legacy], messages: [] }) };
+  const state = { current: thread({ attempts: [legacy], messages: [] }) };
   await serve(page, state);
   await page.route("**/api/attempts/attempt-1/rereview", (route) => {
-    state.current = session({
+    state.current = thread({
       attempts: [attempt({ note_state: "skipped" })],
     });
     return route.fulfill({ json: { status: "pending" } });
@@ -1176,7 +827,7 @@ test("earlier versions stay viewable after re-review and on normal attempts", as
       ],
     }),
   );
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const panel = page.getByRole("tabpanel", { name: "Review" });
   await panel
     .getByRole("button", { name: "Re-review with the new coach" })
@@ -1190,13 +841,14 @@ test("earlier versions stay viewable after re-review and on normal attempts", as
     .click();
   await panel.getByRole("button", { name: "View previous analyses" }).click();
   await panel.getByText(/Saved before re-review/).click();
+  await panel.getByText("Transcript for this version", { exact: true }).click();
   await expect(panel.getByText("Archived transcript.")).toBeVisible();
   await expect(
     panel.getByText("Old coach summary.", { exact: true }),
   ).toBeVisible();
 
   // A normal attempt offers the same viewer and a re-review, collapsed.
-  state.current = session();
+  state.current = thread();
   await page.reload();
   await expect(
     panel.getByRole("button", { name: "Re-review this attempt" }),
@@ -1212,21 +864,22 @@ test("earlier versions stay viewable after re-review and on normal attempts", as
   ).toBeVisible();
 });
 
-test("leaving mid-reply keeps the newly opened session on screen", async ({
+test("leaving mid-reply keeps the newly opened topic on screen", async ({
   page,
 }) => {
-  await serve(page, { current: session() });
-  await page.route("**/api/sessions/other-session", (route) =>
+  await serve(page, { current: thread() });
+  const hashMaps = topic(
+    "hash-maps",
+    "Hash maps",
+    "Data structures and algorithms",
+    "beginner",
+    "How does a hash map find a value so quickly? Explain it with a practical example.",
+  );
+  await page.route("**/api/topics/hash-maps/thread", (route) =>
     route.fulfill({
-      json: session({
-        id: "other-session",
-        topic: {
-          id: "hash-maps",
-          title: "Hash maps",
-          category: "Data structures",
-          difficulty: "beginner",
-          prompt: "Explain a hash map.",
-        },
+      json: thread({
+        topic: hashMaps,
+        session_id: "other-session",
         attempts: [attempt({ session_id: "other-session" })],
         messages: [],
       }),
@@ -1243,27 +896,25 @@ test("leaving mid-reply keeps the newly opened session on screen", async ({
         { delta: "Late reply." },
         {
           done: true,
-          message: {
+          message: message({
             id: 50,
-            role: "assistant",
             content: "Late reply.",
             created_at: "2026-11-17T12:00:00Z",
-            attempt_number: 1,
             kind: "chat",
             parts: [{ type: "text", text: "Late reply." }],
-          },
+          }),
         },
       ]),
     });
     chatDone = true;
   });
-  await page.goto("/#/session/review-ui");
+  await page.goto("/#/topic/auth");
   const chat = page.getByRole("region", { name: "Coach chat" });
   await chat
     .getByPlaceholder("Ask about your attempt or the topic…")
     .fill("Hi");
   await chat.getByRole("button", { name: "Send message" }).click();
-  await page.evaluate(() => (location.hash = "#/session/other-session"));
+  await page.evaluate(() => (location.hash = "#/topic/hash-maps"));
   await expect(page.getByRole("heading", { name: "Hash maps" })).toBeVisible();
   release();
   await expect.poll(() => chatDone).toBe(true);
@@ -1272,7 +923,7 @@ test("leaving mid-reply keeps the newly opened session on screen", async ({
   await expect(
     page.getByRole("heading", { name: "Authentication vs. authorization" }),
   ).toHaveCount(0);
-  expect(page.url()).toContain("#/session/other-session");
+  expect(page.url()).toContain("#/topic/hash-maps");
 });
 
 const passNames = ["technical", "communication", "writer", "chat", "memory"];
@@ -1293,109 +944,6 @@ async function mockModels(page: Page, selected = "qwen3.5:9b-q4_K_M") {
     }),
   );
 }
-
-test("today lists second attempts and opens tomorrow label", async ({
-  page,
-}) => {
-  let stageBody: Json | null = null;
-  const topic = (id: string, title: string) => ({
-    id,
-    title,
-    category: "Systems",
-    difficulty: "Intermediate",
-    prompt: "Explain it.",
-  });
-  await page.route("**/api/attempt2", (route) =>
-    route.fulfill({
-      json: [
-        {
-          session_id: "a2-ready",
-          topic: topic("t1", "Hash maps"),
-          attempt2_after: "2026-11-16",
-          available: true,
-        },
-        {
-          session_id: "a2-later",
-          topic: topic("t2", "Caching"),
-          attempt2_after: "2026-11-18",
-          available: false,
-        },
-      ],
-    }),
-  );
-  await page.route("**/api/sessions/a2-ready/stage", (route) => {
-    stageBody = route.request().postDataJSON();
-    return route.fulfill({
-      status: 409,
-      json: {
-        detail: "Attempt 2 opens tomorrow so it tests what you remember.",
-      },
-    });
-  });
-  await page.goto("/#/today");
-  const list = page.getByRole("region", { name: "Second attempts" });
-  await expect(list.getByText("Hash maps")).toBeVisible();
-  await expect(list.getByText("Caching")).toBeVisible();
-  await expect(list.getByText("Opens tomorrow")).toHaveCount(1);
-  await expect(
-    list.getByRole("button", { name: "Record attempt 2" }),
-  ).toHaveCount(1);
-  await list.getByRole("button", { name: "Record attempt 2" }).click();
-  expect(stageBody).toEqual({ stage: "record2" });
-  await expect(page.getByRole("alert")).toContainText(
-    "Attempt 2 opens tomorrow",
-  );
-});
-
-test("the in-progress banner leaves out sessions whose attempt 2 is open", async ({
-  page,
-}) => {
-  const item = (
-    id: string,
-    title: string,
-    stage: string,
-    attempt2_after: string | null,
-  ) => ({
-    id,
-    topic: {
-      id,
-      title,
-      category: "Systems",
-      difficulty: "Intermediate",
-      prompt: "Explain it.",
-    },
-    created_at: "2026-11-15T12:00:00Z",
-    completed_at: null,
-    review_due: null,
-    attempt_count: 1,
-    stage,
-    attempt2_after,
-    coverage: [],
-  });
-  let sessions = [
-    item("open-a2", "Hash maps", "review1", "2000-01-01"),
-    item("recording-a2", "Queues", "record2", "2000-01-01"),
-    item("day-one", "Caching", "review1", "2999-01-01"),
-  ];
-  await page.route("**/api/sessions", (route) =>
-    route.fulfill({ json: sessions }),
-  );
-  await page.route("**/api/attempt2", (route) => route.fulfill({ json: [] }));
-  await page.goto("/#/today");
-  const banner = page.locator(".resume-banner");
-  // Day 1: attempt 2 isn't open yet, so the banner still leads back to the review.
-  await expect(banner).toContainText("Caching");
-  sessions = sessions.slice(0, 2);
-  await page.reload();
-  await expect(
-    page.getByRole("heading", { name: "Today’s practice" }),
-  ).toBeVisible();
-  // Day 2: the attempt 1 review would undo the recall test; "Record attempt 2" is the way in.
-  await expect(banner).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: /Continue session/ }),
-  ).toHaveCount(0);
-});
 
 test("per-pass model selects save", async ({ page }) => {
   let busy = true;
@@ -1635,31 +1183,42 @@ test("coach notes edit, over-limit warning, restore", async ({ page }) => {
   await expect(region.getByRole("textbox")).toHaveCount(0);
 });
 
-test("today second attempts shows load error with retry", async ({ page }) => {
+test("today's ready list shows a load error with retry", async ({ page }) => {
   let fail = true;
-  await page.route("**/api/attempt2", (route) =>
+  await mockLists(page);
+  await page.route("**/api/practice/ready", (route) =>
     fail
-      ? route.fulfill({ status: 500, json: { detail: "Queue unavailable." } })
+      ? route.fulfill({
+          status: 500,
+          json: { detail: "Ready list unavailable." },
+        })
       : route.fulfill({
           json: [
             {
-              session_id: "a2",
-              topic: {
-                id: "t1",
-                title: "Hash maps",
-                category: "Systems",
-                difficulty: "Intermediate",
-                prompt: "Explain it.",
-              },
-              attempt2_after: "2026-11-16",
-              available: true,
+              topic_id: "hash-maps",
+              topic: topic(
+                "hash-maps",
+                "Hash maps",
+                "Data structures and algorithms",
+                "beginner",
+                "How does a hash map find a value so quickly? Explain it with a practical example.",
+              ),
+              session_id: "thread-hash-maps",
+              attempt_count: 1,
+              last_attempt_at: "2026-11-04T15:46:37.777536+00:00",
+              next_attempt_after: "2026-11-05",
+              can_record: true,
+              review_due: null,
+              due: false,
             },
           ],
         }),
   );
   await page.goto("/#/today");
-  const list = page.getByRole("region", { name: "Second attempts" });
-  await expect(list.getByRole("alert")).toContainText("Queue unavailable.");
+  const list = page.getByRole("region", { name: "Ready for another attempt" });
+  await expect(list.getByRole("alert")).toContainText(
+    "Ready list unavailable.",
+  );
   fail = false;
   await list.getByRole("button", { name: "Retry" }).click();
   await expect(list.getByText("Hash maps")).toBeVisible();

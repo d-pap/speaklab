@@ -14,7 +14,7 @@ import logging
 import re
 from collections.abc import Iterator
 
-from . import db, llm, markers, memory, models, pipeline
+from . import db, feedback, llm, markers, memory, models, pipeline, threads
 from .curriculum import prompt, topic_for
 
 log = logging.getLogger("speaklab.chat")
@@ -48,7 +48,7 @@ CHAT_SYSTEM = (
     "accurate, what was missing or wrong, and how to say it more clearly. Don't end every reply with a "
     "question.\n"
     "Prepare them for their next attempt by deepening their own grasp of the topic. Never hand "
-    "over a script or a full answer to memorize for attempt 2. If they ask for one, give the key ideas and "
+    "over a script or a full answer to memorize for the next attempt. If they ask for one, give the key ideas and "
     "a structure instead, and say why.\n"
     "Markers: refer to the learner's words only with markers. [[L7]] links line L7; [[L7:\"exact words\"]] "
     "quotes words copied exactly from line L7. Use a marker every time you mention or quote something "
@@ -204,7 +204,7 @@ def _context(session: dict, attempt: dict, left_out: set[str]) -> str:
         review += f"\nThe learner's own read of the attempt: {attempt['learner_note']}"
     parts = [
         f"This is the learner's attempt {attempt['number']}. "
-        f"They were asked: {prompt(topic, session['prompt_kind'])}",
+        f"They were asked: {prompt(topic, threads.attempt_settings(attempt, session)['prompt_kind'])}",
         "## Coach notes\n" + (notes or "No notes yet."),
         "## Transcript lines\n" + transcript,
         "## Review structure\n" + review,
@@ -322,14 +322,15 @@ def _messages_for_reply(session: dict, attempt: dict) -> list[dict]:
 # Storage and streaming
 
 
-def _store(attempt: dict, role: str, content: str, model: str | None = None) -> dict:
+def _store(attempt: dict, role: str, content: str, model: str | None = None, context: dict | None = None) -> dict:
     with db.connect() as conn:
         if not conn.execute("SELECT 1 FROM attempts WHERE id=?", (attempt["id"],)).fetchone():
             raise models.ServiceUnavailable(REPLACED)
         cursor = conn.execute(
-            "INSERT INTO messages(session_id,role,content,created_at,attempt_number,kind,model) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (attempt["session_id"], role, content, db.now(), attempt["number"], "chat", model),
+            "INSERT INTO messages(session_id,role,content,created_at,attempt_number,kind,model,generation_context) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (attempt["session_id"], role, content, db.now(), attempt["number"], "chat", model,
+             json.dumps(context) if context else None),
         )
         return dict(conn.execute("SELECT * FROM messages WHERE id=?", (cursor.lastrowid,)).fetchone())
 
@@ -357,7 +358,10 @@ def stream_reply(session_id: str, attempt_number: int, message: str) -> Iterator
         text = markers.strip_unknown("".join(chunks), lines).strip()
         if not text:
             raise models.ServiceUnavailable(EMPTY_REPLY)
-        stored = _store(attempt, "assistant", text, result.model)
+        context = feedback.generation_context(attempt, session, [{
+            "request": result.request, "raw_completion": "".join(chunks), "truncated": result.truncated,
+        }])
+        stored = feedback.public_message(_store(attempt, "assistant", text, result.model, context))
         done = {"done": True, "message": {**stored, "parts": markers.resolve(text, lines)}}
         if result.truncated:
             done["warning"] = TRUNCATED_WARNING

@@ -20,8 +20,9 @@ export default defineConfig({
   },
   webServer: [
     {
+      // Each run starts from empty data/e2e (see e2e/reset-data.mjs), never normal practice data.
       command:
-        "../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8766",
+        "node e2e/reset-data.mjs && ../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8766",
       url: "http://127.0.0.1:8766/api/topics",
       reuseExistingServer: false,
       env: {

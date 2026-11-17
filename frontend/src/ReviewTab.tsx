@@ -190,17 +190,15 @@ export function ReviewTab({
   if (isTooShort(attempt))
     return (
       <div className="review-tab">
-        {attempt.number === 1 ? (
+        {onRecordAgain ? (
           <>
             <p>
               No substantive explanation was recorded. Record again when you’re
               ready.
             </p>
-            {onRecordAgain && (
-              <button className="button primary small" onClick={onRecordAgain}>
-                Record again
-              </button>
-            )}
+            <button className="button primary small" onClick={onRecordAgain}>
+              Record again
+            </button>
           </>
         ) : (
           <p>No substantive explanation was recorded for this attempt.</p>
@@ -253,7 +251,7 @@ export function ReviewTab({
       <p className="small muted">Coaching estimates, not measurements.</p>
       {review.comparison && (
         <div className="score-changes">
-          <h3>Since attempt 1</h3>
+          <h3>Since attempt {attempt.number - 1}</h3>
           <ul className="plain-list">
             {review.comparison.changes.map((c) => (
               <li key={c.name}>
@@ -273,7 +271,7 @@ export function ReviewTab({
           </li>
         ))}
       </ol>
-      <h3>{attempt.number === 1 ? "For attempt 2" : "For next time"}</h3>
+      <h3>For next time</h3>
       <ul className="checklist">
         {review.checklist.map((item) => (
           <li key={item}>{item}</li>
@@ -282,7 +280,7 @@ export function ReviewTab({
       {warning && <p className="small muted">{warning}</p>}
       {previous && !review.comparison && reviewStructure(previous) && (
         <p className="small muted">
-          No score comparison with attempt 1 was written.
+          No score comparison with attempt {previous.number} was written.
         </p>
       )}
       {technical && (

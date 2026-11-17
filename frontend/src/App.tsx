@@ -3,7 +3,6 @@ import {
   ArrowRight,
   AudioLines,
   BookOpen,
-  CalendarDays,
   Check,
   ChevronRight,
   CircleHelp,
@@ -20,72 +19,69 @@ import {
   Sparkles,
   Sun,
   Terminal,
-  X,
 } from "lucide-react";
-import { api, dateLabel, errorText, post, put } from "./api";
+import { api, ApiError, dateLabel, errorText } from "./api";
 import { Empty, ErrorNotice, Loading } from "./components";
-import { reviewing } from "./Practice";
-import { ReviewPage } from "./ReviewPage";
-import { reviewStructure } from "./ReviewTab";
 import { Today } from "./Today";
-import { Recorder } from "./Recorder";
+import { TopicPage } from "./TopicPage";
 import { CoachNotes } from "./CoachNotes";
 import { ModelPicker } from "./ModelPicker";
-import type {
-  Health,
-  HistoryItem,
-  Review,
-  Session,
-  Stage,
-  Topic,
-} from "./types";
+import type { Health, HistoryRow, Recommendation, Topic } from "./types";
 
-const kinds = [
-  "Concept explanation",
-  "How it works",
-  "Compare",
-  "Trade-off",
-  "Defend a decision",
-  "Nontechnical audience",
-];
-const styles = [
-  "Conversational",
-  "Thoughtful teacher",
-  "Concise interview",
-  "Animated storyteller",
-];
-const steps: [Stage, string][] = [
-  ["record1", "Explain"],
-  ["review1", "Review"],
-  ["record2", "Try again"],
-  ["review2", "Review again"],
-];
 const route = () => location.hash.replace(/^#\/?/, "") || "today";
+const ALL_PRACTISED =
+  "You’ve practised every topic here — include practised to see them all";
+
+/** `topic/<id>`, `topic/<id>?attempt=N` and `topic/<id>/new`. */
+function topicRoute(page: string) {
+  const [path, query = ""] = page.split("?");
+  const parts = path.split("/");
+  if (parts[0] !== "topic" || !parts[1]) return null;
+  const attempt = Number(new URLSearchParams(query).get("attempt"));
+  return {
+    id: decodeURIComponent(parts[1]),
+    attempt: Number.isInteger(attempt) && attempt > 0 ? attempt : null,
+    wantsNew: parts[2] === "new",
+  };
+}
+
+/** Old `#/session/<id>` links: find the session's topic and replace the link with its page. */
+function SessionRedirect({ sessionId }: { sessionId: string }) {
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    api<{ topic_id: string }>(`/sessions/${encodeURIComponent(sessionId)}`)
+      .then((s) => {
+        if (alive)
+          location.replace("#/topic/" + encodeURIComponent(s.topic_id));
+      })
+      .catch((e) => alive && setError(errorText(e)));
+    return () => {
+      alive = false;
+    };
+  }, [sessionId]);
+  return error ? <ErrorNotice message={error} /> : <Loading />;
+}
 
 export default function App() {
   const [page, setPage] = useState(route);
   const [health, setHealth] = useState<Health | null>(null);
   const [topics, setTopics] = useState<Topic[]>([]);
-  const [sessions, setSessions] = useState<HistoryItem[]>([]);
-  const [reviews, setReviews] = useState<Review[]>([]);
+  const [history, setHistory] = useState<HistoryRow[]>([]);
   const [selected, setSelected] = useState<Topic | null>(null);
   const [reason, setReason] = useState(
     "A fresh perspective for your next practice",
   );
+  const [suggestionEmpty, setSuggestionEmpty] = useState("");
+  const [includePractised, setIncludePractised] = useState(false);
   const [category, setCategory] = useState("");
   const [difficulty, setDifficulty] = useState("");
-  const [duration, setDuration] = useState(120);
-  const [style, setStyle] = useState("Conversational");
-  const [kind, setKind] = useState("Concept explanation");
-  const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState("");
   const [booting, setBooting] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false);
   const currentRoute = useRef(page);
   const navigationApproved = useRef(false);
-  dirtyRef.current = dirty;
   const [dark, setDark] = useState(() => {
     try {
       return localStorage.getItem("speaklab-theme") === "dark";
@@ -94,24 +90,26 @@ export default function App() {
     }
   });
   const [search, setSearch] = useState("");
-  const onDirty = useCallback((value: boolean) => setDirty(value), []);
+  // Read synchronously, so a save that navigates right away isn't stopped by a stale warning.
+  const onDirty = useCallback((value: boolean) => {
+    dirtyRef.current = value;
+  }, []);
+  const topicPage = topicRoute(page);
   const sessionId = page.startsWith("session/") ? page.split("/")[1] : null;
-  const navigate = useCallback(
-    (destination: string) => {
-      if (destination === currentRoute.current) return;
-      if (
-        dirty &&
-        !window.confirm(
-          "Leave this unsaved recording? Save it or download a copy before leaving.",
-        )
+  const inPractice = !!topicPage || !!sessionId;
+  const navigate = useCallback((destination: string) => {
+    if (destination === currentRoute.current) return;
+    if (
+      dirtyRef.current &&
+      !window.confirm(
+        "Leave this unsaved recording? Save it or download a copy before leaving.",
       )
-        return;
-      setError("");
-      navigationApproved.current = true;
-      location.hash = "/" + destination;
-    },
-    [dirty],
-  );
+    )
+      return;
+    setError("");
+    navigationApproved.current = true;
+    location.hash = "/" + destination;
+  }, []);
   useEffect(() => {
     const update = () => {
       const next = route();
@@ -122,7 +120,7 @@ export default function App() {
           "Leave this unsaved recording? Save it or download a copy before leaving.",
         )
       ) {
-        history.replaceState(null, "", "#/" + currentRoute.current);
+        window.history.replaceState(null, "", "#/" + currentRoute.current);
         return;
       }
       navigationApproved.current = false;
@@ -141,50 +139,57 @@ export default function App() {
       /* Preference stays in memory. */
     }
   }, [dark]);
-  const loadDashboard = useCallback(async () => {
-    const [a, b] = await Promise.all([
-      api<HistoryItem[]>("/sessions"),
-      api<Review[]>("/reviews"),
-    ]);
-    setSessions(a);
-    setReviews(b);
+  const loadHistory = useCallback(async () => {
+    setHistory(await api<HistoryRow[]>("/history"));
   }, []);
   const checkHealth = useCallback(async () => {
     setHealth(await api<Health>("/health"));
   }, []);
-  async function chooseRandom(exclude?: string) {
-    setBusy(true);
-    setError("");
-    try {
-      const q = new URLSearchParams();
-      if (category) q.set("category", category);
-      if (difficulty) q.set("difficulty", difficulty);
-      if (exclude) q.set("exclude", exclude);
-      const r = await api<{ topic: Topic; reason: string }>(
-        "/topics/recommend?" + q,
-      );
-      setSelected(r.topic);
-      setReason(r.reason);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
+  useEffect(() => {
+    const refresh = () => void checkHealth().catch(() => {});
+    window.addEventListener("speaklab-model-changed", refresh);
+    return () => window.removeEventListener("speaklab-model-changed", refresh);
+  }, [checkHealth]);
+  const practised = new Set(history.map((h) => h.topic_id));
+  /** A suggestion from the unpractised topics, or from all of them when practised ones are
+   * included. When none is left, a calm empty state rather than an error. */
+  const suggest = useCallback(
+    async (include: boolean, exclude?: string) => {
+      setBusy(true);
+      setError("");
+      try {
+        const q = new URLSearchParams();
+        if (category) q.set("category", category);
+        if (difficulty) q.set("difficulty", difficulty);
+        if (exclude) q.set("exclude", exclude);
+        q.set("include_practised", String(include));
+        const r = await api<Recommendation>("/topics/recommend?" + q);
+        setSelected(r.topic);
+        setReason(r.reason);
+        setSuggestionEmpty("");
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) {
+          setSelected(null);
+          setSuggestionEmpty(include ? e.message : ALL_PRACTISED);
+        } else setError(errorText(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [category, difficulty],
+  );
+  // On Today the pill changes the suggestion; in the library it only filters the tiles, so a
+  // topic the learner picked stays picked.
+  function choosePractised(include: boolean) {
+    setIncludePractised(include);
+    if (page === "today") void suggest(include);
   }
   useEffect(() => {
     let alive = true;
     async function boot() {
       try {
-        const [t, r] = await Promise.all([
-          api<Topic[]>("/topics"),
-          api<{ topic: Topic; reason: string }>("/topics/recommend"),
-          loadDashboard(),
-        ]);
-        if (alive) {
-          setTopics(t);
-          setSelected(r.topic);
-          setReason(r.reason);
-        }
+        const [t] = await Promise.all([api<Topic[]>("/topics"), loadHistory()]);
+        if (alive) setTopics(t);
         void checkHealth().catch(() => {});
       } catch (e) {
         if (alive) setError(errorText(e));
@@ -193,108 +198,46 @@ export default function App() {
       }
     }
     void boot();
+    void suggest(false);
     return () => {
       alive = false;
     };
-  }, [loadDashboard, checkHealth]);
+    // The first suggestion is made once, at start; later ones follow the learner's choices.
+  }, [loadHistory, checkHealth]);
   useEffect(() => {
-    if (page === "today" || page === "history")
-      void loadDashboard().catch((e) => setError(errorText(e)));
-  }, [page, loadDashboard]);
-  // A session fetched for a page the learner has since left is dropped, never shown.
-  const currentSessionId = useRef(sessionId);
-  currentSessionId.current = sessionId;
-  const acceptSession = useCallback((next: Session) => {
-    if (next.id === currentSessionId.current) setSession(next);
-  }, []);
-  const refreshSession = useCallback(async () => {
-    if (sessionId) acceptSession(await api<Session>(`/sessions/${sessionId}`));
-  }, [sessionId, acceptSession]);
+    if (page === "today" || page === "history" || page === "topics")
+      void loadHistory().catch((e) => setError(errorText(e)));
+  }, [page, loadHistory]);
+  // A suggestion that has since been practised (recorded just now) gives way to a fresh one,
+  // so "Suggested topics" stays unpractised unless practised topics are included.
+  const stale =
+    page === "today" &&
+    !includePractised &&
+    !!selected &&
+    history.some((h) => h.topic_id === selected.id);
   useEffect(() => {
-    setSession(null);
-    if (sessionId) void refreshSession().catch((e) => setError(errorText(e)));
-  }, [sessionId, refreshSession]);
-  // Poll while analysis runs or a review is on its way (the note box, a queued writer).
-  const running = session?.attempts.some(reviewing);
-  // From review2 on both attempts are reachable; attempt 2 opens first.
-  const [viewedAttempt, setViewedAttempt] = useState<1 | 2>(2);
-  useEffect(() => setViewedAttempt(2), [sessionId, session?.stage]);
-  const reviewedAttempt: 1 | 2 =
-    session?.stage === "review2" && session.attempts.some((a) => a.number === 2)
-      ? viewedAttempt
-      : 1;
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(
-      () => void refreshSession().catch((e) => setError(errorText(e))),
-      2500,
-    );
-    return () => clearInterval(timer);
-  }, [running, refreshSession]);
-  async function start(topic = selected) {
-    if (!topic) return;
-    setBusy(true);
-    setError("");
-    try {
-      const s = await post<Session>("/sessions", {
-        topic_id: topic.id,
-        duration,
-        style,
-        prompt_kind: kind,
-      });
-      navigate(`session/${s.id}`);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function changeStage(stage: Stage) {
-    if (!session) return;
-    setError("");
-    try {
-      acceptSession(
-        await put<Session>(`/sessions/${session.id}/stage`, { stage }),
-      );
-      window.scrollTo(0, 0);
-    } catch (e) {
-      setError(errorText(e));
-    }
-  }
-  const due = reviews.filter((r) => r.overdue);
+    if (stale) void suggest(false);
+  }, [stale, suggest]);
+  // A practised topic opens its page; an unpractised one opens on its recording screen.
+  const open = (topic: Topic) =>
+    navigate("topic/" + encodeURIComponent(topic.id));
   const categories = [...new Set(topics.map((t) => t.category))];
   const allLocal = health?.ollama && health.whisper;
-  const settingsControls = (
-    <div className="practice-options">
-      <label>
-        Speaking time
-        <select
-          value={duration}
-          onChange={(e) => setDuration(Number(e.target.value))}
-        >
-          <option value={120}>2 minutes</option>
-          <option value={180}>3 minutes</option>
-          <option value={240}>4 minutes</option>
-          <option value={300}>5 minutes</option>
-        </select>
-      </label>
-      <label>
-        Prompt style
-        <select value={kind} onChange={(e) => setKind(e.target.value)}>
-          {kinds.map((v) => (
-            <option key={v}>{v}</option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Delivery intention
-        <select value={style} onChange={(e) => setStyle(e.target.value)}>
-          {styles.map((v) => (
-            <option key={v}>{v}</option>
-          ))}
-        </select>
-      </label>
-    </div>
+  const shown = topics.filter(
+    (t) =>
+      (includePractised || !practised.has(t.id)) &&
+      (!category || t.category === category) &&
+      (!difficulty || t.difficulty === difficulty) &&
+      t.title.toLowerCase().includes(search.toLowerCase()),
+  );
+  const practisedPill = (
+    <button
+      className="pill-toggle"
+      aria-pressed={includePractised}
+      onClick={() => choosePractised(!includePractised)}
+    >
+      {includePractised && <Check size={13} />} Include practised
+    </button>
   );
   return (
     <div className="app-shell">
@@ -335,7 +278,7 @@ export default function App() {
                 key={path as string}
                 aria-label={label as string}
                 className={
-                  page === path || (path === "today" && sessionId)
+                  page === path || (path === "today" && inPractice)
                     ? "active"
                     : ""
                 }
@@ -345,9 +288,6 @@ export default function App() {
                 <span>
                   {path === "history" ? "History" : (label as string)}
                 </span>
-                {path === "history" && due.length > 0 && (
-                  <span className="nav-count">{due.length}</span>
-                )}
               </button>
             );
           })}
@@ -380,7 +320,7 @@ export default function App() {
       <div className="main-shell">
         <header className="topbar">
           <span>
-            {sessionId
+            {inPractice
               ? "Your practice workspace"
               : page === "settings"
                 ? "Settings"
@@ -402,7 +342,7 @@ export default function App() {
           id="main"
           tabIndex={-1}
           className={
-            sessionId ? "main-content session-content" : "main-content"
+            inPractice ? "main-content session-content" : "main-content"
           }
         >
           {error && (
@@ -410,148 +350,34 @@ export default function App() {
               message={error}
               retry={() => {
                 setError("");
-                if (sessionId)
-                  void refreshSession().catch((e) => setError(errorText(e)));
-                else location.reload();
+                location.reload();
               }}
             />
           )}
           {booting ? (
             <Loading />
+          ) : topicPage ? (
+            <TopicPage
+              key={topicPage.id}
+              topicId={topicPage.id}
+              attemptNumber={topicPage.attempt}
+              wantsNew={topicPage.wantsNew}
+              navigate={navigate}
+              onDirty={onDirty}
+            />
           ) : sessionId ? (
-            session ? (
-              <>
-                <div className="session-top">
-                  <button
-                    className="text-button muted"
-                    onClick={() => navigate("today")}
-                  >
-                    <X size={15} /> Leave practice
-                  </button>
-                  <span className="small muted">
-                    {dateLabel(session.created_at)}
-                  </span>
-                </div>
-                <nav className="stepper" aria-label="Practice stages">
-                  {steps.map(([s, label], i) => {
-                    const current = steps.findIndex(
-                      (v) => v[0] === session.stage,
-                    );
-                    const count = session.attempts.length;
-                    // The attempt 1 review stays closed while attempt 2 is recorded or reviewed,
-                    // so attempt 2 tests what the learner remembers. Attempt 2's recorder is
-                    // offered only until attempt 2 is saved (the backend refuses it after).
-                    const enabled =
-                      !dirty &&
-                      !session.completed_at &&
-                      (s === "record1"
-                        ? session.stage === "record1"
-                        : s === "review1"
-                          ? count > 0 && current <= 1
-                          : s === "record2"
-                            ? count > 0 &&
-                              (session.stage === "review1" ||
-                                session.stage === "record2")
-                            : session.attempts.some((a) => a.number === 2));
-                    return (
-                      <button
-                        className={`${session.stage === s ? "current" : ""} ${i < current ? "done" : ""}`}
-                        key={s}
-                        disabled={!enabled}
-                        onClick={() => void changeStage(s)}
-                        aria-current={session.stage === s ? "step" : undefined}
-                      >
-                        <span>{i < current ? <Check size={13} /> : i + 1}</span>
-                        {label}
-                      </button>
-                    );
-                  })}
-                </nav>
-                {session.stage === "record1" ? (
-                  <Recorder
-                    key="record1"
-                    session={session}
-                    number={1}
-                    onSaved={refreshSession}
-                    onDirty={onDirty}
-                  />
-                ) : session.stage === "record2" ? (
-                  <Recorder
-                    key="record2"
-                    session={session}
-                    number={2}
-                    onSaved={refreshSession}
-                    onDirty={onDirty}
-                    brief={<DayTwo session={session} />}
-                  />
-                ) : (
-                  <>
-                    {session.stage === "review2" &&
-                      session.attempts.some((a) => a.number === 1) &&
-                      session.attempts.some((a) => a.number === 2) && (
-                        <div
-                          className="attempt-switch"
-                          role="group"
-                          aria-label="Choose an attempt"
-                        >
-                          {([1, 2] as const).map((n) => (
-                            <button
-                              key={n}
-                              aria-pressed={viewedAttempt === n}
-                              className={viewedAttempt === n ? "on" : ""}
-                              onClick={() => setViewedAttempt(n)}
-                            >
-                              Attempt {n}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    <ReviewPage
-                      key={`${session.stage}-${reviewedAttempt}`}
-                      session={session}
-                      attemptNumber={reviewedAttempt}
-                      onSession={acceptSession}
-                    />
-                    <div className="page-actions">
-                      <p className="muted small">
-                        {session.stage === "review1"
-                          ? session.attempt2_after &&
-                            session.attempt2_after >
-                              new Date().toLocaleDateString("en-CA")
-                            ? "Attempt 2 opens tomorrow, so it tests what you remember."
-                            : "Attempt 2 is open. Record it from memory."
-                          : session.completed_at
-                            ? session.review_due
-                              ? `Your next memory check is on ${dateLabel(session.review_due)}.`
-                              : "This session is complete."
-                            : "The session completes once this review is written."}
-                      </p>
-                      <button
-                        className="button primary"
-                        onClick={() => navigate("today")}
-                      >
-                        {session.stage === "review1"
-                          ? "Done for today"
-                          : "Back to today"}
-                        <ArrowRight size={17} />
-                      </button>
-                    </div>
-                  </>
-                )}
-              </>
-            ) : (
-              !error && <Loading />
-            )
+            <SessionRedirect key={sessionId} sessionId={sessionId} />
           ) : page === "today" ? (
             <Today
               selected={selected}
+              selectedPractised={!!selected && practised.has(selected.id)}
               reason={reason}
+              emptyMessage={suggestionEmpty}
               busy={busy}
-              sessions={sessions}
-              reviews={reviews}
-              settings={settingsControls}
-              onStart={(topic) => void start(topic)}
-              onShuffle={() => void chooseRandom(selected?.id)}
+              history={history}
+              practisedPill={practisedPill}
+              onOpen={open}
+              onShuffle={() => void suggest(includePractised, selected?.id)}
               navigate={navigate}
             />
           ) : page === "topics" ? (
@@ -597,54 +423,53 @@ export default function App() {
                     ))}
                   </select>
                 </label>
+                {practisedPill}
                 <button
                   className="button secondary"
                   disabled={busy}
-                  onClick={() => void chooseRandom(selected?.id)}
+                  onClick={() => void suggest(includePractised, selected?.id)}
                 >
                   <Shuffle size={16} /> Pick for me
                 </button>
               </div>
+              {suggestionEmpty && !selected && (
+                <p className="muted small">{suggestionEmpty}</p>
+              )}
               <div className="topic-library">
-                {topics
-                  .filter(
-                    (t) =>
-                      (!category || t.category === category) &&
-                      (!difficulty || t.difficulty === difficulty) &&
-                      t.title.toLowerCase().includes(search.toLowerCase()),
-                  )
-                  .map((t) => (
-                    <button
-                      key={t.id}
-                      className={`topic-tile ${selected?.id === t.id ? "selected" : ""}`}
-                      onClick={() => {
-                        setSelected(t);
-                        setReason("Chosen by you");
-                      }}
-                      aria-pressed={selected?.id === t.id}
-                    >
-                      <div>
-                        <span className="eyebrow">{t.category}</span>
-                        {selected?.id === t.id ? (
-                          <Check size={18} />
-                        ) : (
-                          <BookOpen size={18} />
-                        )}
-                      </div>
-                      <h3>{t.title}</h3>
-                      <p>{t.prompt}</p>
+                {shown.map((t) => (
+                  <button
+                    key={t.id}
+                    className={`topic-tile ${selected?.id === t.id ? "selected" : ""}`}
+                    onClick={() => {
+                      setSelected(t);
+                      setReason("Chosen by you");
+                    }}
+                    aria-pressed={selected?.id === t.id}
+                  >
+                    <div>
+                      <span className="eyebrow">{t.category}</span>
+                      {selected?.id === t.id ? (
+                        <Check size={18} />
+                      ) : (
+                        <BookOpen size={18} />
+                      )}
+                    </div>
+                    <h3>{t.title}</h3>
+                    <p>{t.prompt}</p>
+                    <span className="tag-row">
                       <span className="difficulty">{t.difficulty}</span>
-                    </button>
-                  ))}
+                      {practised.has(t.id) && (
+                        <span className="tag">Practised</span>
+                      )}
+                    </span>
+                  </button>
+                ))}
               </div>
-              {!topics.some(
-                (t) =>
-                  (!category || t.category === category) &&
-                  (!difficulty || t.difficulty === difficulty) &&
-                  t.title.toLowerCase().includes(search.toLowerCase()),
-              ) && (
+              {!shown.length && (
                 <Empty title="Try a broader search">
-                  There are no topics matching these filters.
+                  {includePractised || !practised.size
+                    ? "There are no topics matching these filters."
+                    : "There are no unpractised topics matching these filters. Include practised topics to see them all."}
                 </Empty>
               )}
               <div className="selection-bar">
@@ -655,13 +480,14 @@ export default function App() {
                 <button
                   className="button primary"
                   disabled={!selected || busy}
-                  onClick={() => void start()}
+                  onClick={() => selected && open(selected)}
                 >
-                  Begin practice
+                  {selected && practised.has(selected.id)
+                    ? "Open topic"
+                    : "Begin practice"}
                   <ArrowRight size={17} />
                 </button>
               </div>
-              {settingsControls}
             </div>
           ) : page === "history" ? (
             <div className="stack">
@@ -674,97 +500,58 @@ export default function App() {
               </div>
               <section className="panel">
                 <div className="panel-heading">
-                  <CalendarDays size={20} />
-                  <h2>Your review queue</h2>
-                  <span className="tag">{due.length} ready</span>
-                </div>
-                {reviews.length ? (
-                  <div className="review-list">
-                    {reviews.map((r) => (
-                      <div key={r.topic_id}>
-                        <div>
-                          <h3>{r.topic.title}</h3>
-                          <p>
-                            {r.overdue
-                              ? "Ready for a cold explanation"
-                              : `Review on ${dateLabel(r.due)}`}{" "}
-                            · {r.interval_days} day interval
-                          </p>
-                        </div>
-                        <button
-                          className="button secondary small"
-                          disabled={busy}
-                          onClick={() => void start(r.topic)}
-                        >
-                          Practice again
-                          <ArrowRight size={15} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <Empty
-                    icon={<CalendarDays size={26} />}
-                    title="Give your first idea a place to return."
-                  >
-                    Finish a practice session to schedule a review. Each review
-                    starts from memory.
-                  </Empty>
-                )}
-              </section>
-              <section className="panel">
-                <div className="panel-heading">
                   <History size={20} />
-                  <h2>Previous sessions</h2>
+                  <h2>Your topics</h2>
                 </div>
-                {sessions.length ? (
+                {history.length ? (
                   <div className="table-wrap">
                     <table className="history-table">
                       <thead>
                         <tr>
-                          <th>Topic / date</th>
+                          <th>Topic / last practised</th>
+                          <th>Attempts</th>
                           <th>Concepts demonstrated</th>
                           <th>Speaking rate</th>
-                          <th>Status</th>
+                          <th>Next attempt</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {sessions.map((s) => (
-                          <tr key={s.id}>
+                        {history.map((h) => (
+                          <tr key={h.topic_id}>
                             <td>
                               <button
                                 className="text-button"
-                                onClick={() => navigate(`session/${s.id}`)}
+                                onClick={() =>
+                                  navigate(
+                                    "topic/" + encodeURIComponent(h.topic_id),
+                                  )
+                                }
                               >
-                                {s.topic.title}
+                                {h.topic.title}
                                 <ChevronRight size={14} />
                               </button>
-                              <small>{dateLabel(s.created_at)}</small>
+                              <small>{dateLabel(h.last_attempt_at)}</small>
                             </td>
                             <td>
-                              {s.coverage.length
-                                ? s.coverage
-                                    .map((c) =>
-                                      c.correct == null
-                                        ? "—"
-                                        : `${c.correct}/${c.total}`,
-                                    )
-                                    .join(" → ")
-                                : "—"}
+                              {h.attempt_count}{" "}
+                              {h.attempt_count === 1 ? "attempt" : "attempts"}
                             </td>
                             <td>
-                              {s.coverage.length
-                                ? s.coverage
-                                    .map((c) => c.wpm ?? "—")
-                                    .join(" → ")
-                                : "—"}{" "}
+                              {h.coverage.correct == null
+                                ? "—"
+                                : `${h.coverage.correct}/${h.coverage.total}`}
+                            </td>
+                            <td>
+                              {h.coverage.wpm ?? "—"}{" "}
                               <span className="muted small">WPM</span>
                             </td>
                             <td>
                               <span
-                                className={`tag ${s.completed_at ? "completed" : ""}`}
+                                className={`tag ${h.can_record ? "completed" : ""}`}
                               >
-                                {s.completed_at ? "Complete" : "In progress"}
+                                {h.can_record
+                                  ? "New attempt open"
+                                  : "Next attempt opens tomorrow"}
                               </span>
                             </td>
                           </tr>
@@ -772,9 +559,8 @@ export default function App() {
                       </tbody>
                     </table>
                     <p className="muted small">
-                      Before → after, within each session. Rate changes have no
-                      automatic “better” direction. Compare cold attempts across
-                      different days to explore retention.
+                      Concepts and rate are from each topic’s latest attempt.
+                      Rate changes have no automatic “better” direction.
                     </p>
                   </div>
                 ) : (
@@ -782,8 +568,7 @@ export default function App() {
                     icon={<Mic size={26} />}
                     title="Every clear explanation starts somewhere."
                   >
-                    Your recordings and reflections will live here after you
-                    begin your first practice.
+                    Your topics will live here after your first recording.
                   </Empty>
                 )}
               </section>
@@ -792,9 +577,8 @@ export default function App() {
                 <div>
                   <h3>Immediate improvement is one piece of the story.</h3>
                   <p>
-                    Attempt 2 comes on a later day, so its review shows what you
-                    remembered, not what you just read. Each review after that
-                    starts from memory too.
+                    Each new attempt comes on a later day, so its review shows
+                    what you remembered, not what you just read.
                   </p>
                 </div>
               </section>
@@ -871,6 +655,26 @@ export default function App() {
                 </section>
               </div>
               <CoachNotes />
+              <section className="panel">
+                <h2>Coaching feedback</h2>
+                <p>
+                  Rate reviews and coach replies with the thumbs below each
+                  response. Add details to explain what helped or what you
+                  wanted instead.
+                </p>
+                <p className="small muted">
+                  Feedback stays on your connected computer. It collects
+                  examples for improving coaching; votes don’t automatically
+                  retrain or change your model.
+                </p>
+                <a
+                  className="button secondary small"
+                  href="/api/feedback/export"
+                  download="speaklab-feedback.json"
+                >
+                  Export feedback
+                </a>
+              </section>
               <button
                 className="button secondary self-start"
                 disabled={busy}
@@ -953,23 +757,5 @@ export default function App() {
         </main>
       </div>
     </div>
-  );
-}
-
-/** Before attempt 2: the topic, the prompt and attempt 1's checklist, and nothing else. */
-function DayTwo({ session }: { session: Session }) {
-  const checklist = reviewStructure(
-    session.attempts.find((a) => a.number === 1),
-  )?.checklist;
-  if (!checklist?.length) return null;
-  return (
-    <section className="day-two" aria-labelledby="day-two-heading">
-      <h2 id="day-two-heading">Your checklist for attempt 2</h2>
-      <ul className="checklist">
-        {checklist.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
-    </section>
   );
 }

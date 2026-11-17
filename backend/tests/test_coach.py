@@ -398,7 +398,7 @@ def test_attempt2_review_requires_comparison_matching_previous_scores(fake_llm):
 
     assert result["comparison"]["changes"][0] == {"name": "Overall", "before": 5.0, "after": 7.0}
     request = fake_llm.requests_for("writer")[-1]
-    assert request["payload"]["attempt_1_scores"][0] == {"name": "Overall", "score": 5.0}
+    assert request["payload"]["previous_attempt_scores"][0] == {"name": "Overall", "score": 5.0}
     assert "comparison" in request["payload"]["output_schema"]["required"]
 
 
@@ -713,3 +713,10 @@ def test_second_check_correction_with_a_clock_time_keeps_the_original(fake_llm):
     [result] = coach.verify_corrections(TOPIC, LINES, corrections("L3"))
 
     assert result["verified"] is True and result["correction"] == "Correction for L3."
+
+
+def test_writer_prompts_act_on_question_change():
+    """The angle-change signal is data in the payload; both writer system prompts say what to do with it."""
+    for system in (coach.STRUCTURE_SYSTEM, coach.MESSAGE_SYSTEM):
+        assert "question_change" in system
+        assert "indicative" in system

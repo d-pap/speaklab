@@ -5,6 +5,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import httpx
@@ -27,9 +28,22 @@ INJECTION_GUARD = (
 # each. stream_call reports through a StreamResult instead.
 class _CallState(threading.local):
     truncated: bool = False
+    capture: list | None = None
 
 
 call_state = _CallState()
+
+
+@contextmanager
+def capture_text_calls():
+    """Capture exact prose requests, including marker repairs, in the calling thread."""
+    previous = call_state.capture
+    calls = []
+    call_state.capture = calls
+    try:
+        yield calls
+    finally:
+        call_state.capture = previous
 
 
 class PromptTooLong(models.ServiceUnavailable):
@@ -228,12 +242,16 @@ def text_call(pass_name: str, messages: list[dict]) -> tuple[str, str]:
     try:
         with models.client() as http:
             models.assert_local_model(http, config["model"])
-            response = http.post(
-                settings.ollama_url + "/api/chat", json=_request(config, messages, stream=False)
-            )
+            request = _request(config, messages, stream=False)
+            response = http.post(settings.ollama_url + "/api/chat", json=request)
             response.raise_for_status()
             data = response.json()
             call_state.truncated = data.get("done_reason") == "length"
+            if call_state.capture is not None:
+                call_state.capture.append(json.loads(json.dumps({
+                    "request": request, "raw_completion": data["message"]["content"],
+                    "truncated": call_state.truncated,
+                })))
             return data["message"]["content"], config["model"]
     except models.ServiceUnavailable:
         raise
@@ -249,6 +267,7 @@ class StreamResult:
     model: str | None = None
     done: bool = False
     truncated: bool = False
+    request: dict | None = None
 
 
 INCOMPLETE = "The local model stopped before finishing its reply. Try again."
@@ -262,11 +281,12 @@ def stream_call(pass_name: str, messages: list[dict], result: StreamResult | Non
     config = pass_settings()[pass_name]
     _guard_budget(pass_name, messages, config)
     result.model = config["model"]
+    result.request = _request(config, messages, stream=True)
     try:
         with models.client() as http:
             models.assert_local_model(http, config["model"])
             with http.stream(
-                "POST", settings.ollama_url + "/api/chat", json=_request(config, messages, stream=True)
+                "POST", settings.ollama_url + "/api/chat", json=result.request
             ) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():

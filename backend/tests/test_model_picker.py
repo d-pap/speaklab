@@ -2,7 +2,7 @@ import json
 
 import httpx
 import pytest
-from conftest import create, upload
+from conftest import upload
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -58,7 +58,7 @@ def test_picker_lists_installed_models_and_disables_remote_and_embedding_models(
 def test_selection_survives_restart_drives_inference_and_preserves_previous_analysis(
     client, monkeypatch, wav_bytes
 ):
-    attempt = upload(client, create(client), wav_bytes)
+    attempt = upload(client, wav_bytes)
     before = db.one("SELECT * FROM attempts WHERE id=?", (attempt["id"],))
     calls = ollama(monkeypatch)
     response = client.put("/api/settings/model", json={"model": "gemma4:e4b"})
@@ -85,7 +85,7 @@ def test_invalid_selection_cannot_replace_current_model(client, monkeypatch, nam
 
 
 def test_model_switch_waits_for_analysis_and_coach_reply(client, monkeypatch, wav_bytes):
-    a = upload(client, create(client), wav_bytes)
+    a = upload(client, wav_bytes)
     calls = ollama(monkeypatch)
     db.execute("UPDATE attempts SET status='processing' WHERE id=?", (a["id"],))
     assert client.put("/api/settings/model", json={"model": "gemma4:e4b"}).status_code == 409

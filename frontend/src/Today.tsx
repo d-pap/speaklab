@@ -1,60 +1,53 @@
 import { ArrowRight, BookOpen, Clock3, Mic, Shuffle } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { api, dateLabel, errorText, put } from "./api";
+import { api, dateLabel, errorText } from "./api";
 import { ErrorNotice, Loading } from "./components";
-import type { Attempt2Item, HistoryItem, Review, Topic } from "./types";
+import type { HistoryRow, ReadyRow, Topic } from "./types";
+
+const READY_SHOWN = 3;
 
 export function Today({
   selected,
+  selectedPractised,
   reason,
+  emptyMessage,
   busy,
-  sessions,
-  reviews,
-  settings,
-  onStart,
+  history,
+  practisedPill,
+  onOpen,
   onShuffle,
   navigate,
 }: {
   selected: Topic | null;
+  selectedPractised: boolean;
   reason: string;
+  /** Set when no topic is left to suggest (every match is practised). */
+  emptyMessage: string;
   busy: boolean;
-  sessions: HistoryItem[];
-  reviews: Review[];
-  settings: ReactNode;
-  onStart: (topic?: Topic) => void;
+  history: HistoryRow[];
+  practisedPill: ReactNode;
+  onOpen: (topic: Topic) => void;
   onShuffle: () => void;
   navigate: (page: string) => void;
 }) {
-  // A session whose attempt 2 is open is reached through "Record attempt 2": continuing it
-  // here would open the full attempt 1 review right before the recall test.
-  const today = new Date().toLocaleDateString("en-CA");
-  const attempt2Open = (s: HistoryItem) =>
-    s.stage === "record2" ||
-    (s.stage === "review1" && (!s.attempt2_after || s.attempt2_after <= today));
-  const unfinished = sessions.find((s) => !s.completed_at && !attempt2Open(s));
-  const complete = sessions.filter((s) => s.completed_at);
-  const due = reviews.filter((r) => r.overdue);
-  const [queue, setQueue] = useState<Attempt2Item[]>([]);
-  const [queueError, setQueueError] = useState("");
-  const [loadError, setLoadError] = useState("");
-  const loadQueue = useCallback(() => {
-    setLoadError("");
-    api<Attempt2Item[]>("/attempt2")
-      .then(setQueue)
-      .catch((e) => setLoadError(errorText(e)));
+  const [ready, setReady] = useState<ReadyRow[]>([]);
+  const [readyError, setReadyError] = useState("");
+  // Due topics come first from the server; the first few keep "Suggested topics" in view.
+  const [showAllReady, setShowAllReady] = useState(false);
+  const shownReady = showAllReady ? ready : ready.slice(0, READY_SHOWN);
+  const loadReady = useCallback(() => {
+    setReadyError("");
+    api<ReadyRow[]>("/practice/ready")
+      .then(setReady)
+      .catch((e) => setReadyError(errorText(e)));
   }, []);
   useEffect(() => {
-    loadQueue();
-  }, [loadQueue]);
-  async function openAttempt2(id: string) {
-    setQueueError("");
-    try {
-      await put(`/sessions/${id}/stage`, { stage: "record2" });
-      navigate(`session/${id}`);
-    } catch (e) {
-      setQueueError(errorText(e));
-    }
-  }
+    loadReady();
+  }, [loadReady]);
+  // History is ordered by the most recent attempt.
+  const recent = history[0];
+  const attempts = history.reduce((sum, h) => sum + h.attempt_count, 0);
+  const topicPath = (id: string) => "topic/" + encodeURIComponent(id);
   return (
     <div className="today-page">
       <header className="home-heading">
@@ -67,68 +60,90 @@ export function Today({
             })}
           </span>
           <h1>Today’s practice</h1>
-          <p>Explain a concept. Find the gaps. Try again.</p>
+          <p>Explain a concept. Find the gaps. Try again another day.</p>
         </div>
         <span className="time-estimate">
           <Clock3 size={15} /> About 25 minutes
         </span>
       </header>
-      {unfinished && (
-        <div className="resume-banner">
+      {recent && (
+        <section
+          className="resume-banner"
+          aria-label="Pick up where you left off"
+        >
           <div>
-            <span className="eyebrow">In progress</span>
-            <strong>{unfinished.topic.title}</strong>
+            <span className="eyebrow">Pick up where you left off</span>
+            <strong>{recent.topic.title}</strong>
           </div>
           <button
             className="text-button"
-            onClick={() => navigate(`session/${unfinished.id}`)}
+            onClick={() => navigate(topicPath(recent.topic_id))}
           >
-            Continue session <ArrowRight size={16} />
+            Open topic <ArrowRight size={16} />
           </button>
-        </div>
+        </section>
       )}
-      {(queue.length > 0 || loadError) && (
-        <section className="attempt2-list" aria-label="Second attempts">
-          <span className="eyebrow">Second attempts</span>
+      {(ready.length > 0 || readyError) && (
+        <section
+          className="attempt2-list ready-list"
+          aria-labelledby="ready-heading"
+        >
+          <h2 id="ready-heading" className="eyebrow">
+            Ready for another attempt
+          </h2>
           <ul>
-            {queue.map((item) => (
-              <li key={item.session_id}>
-                <strong>{item.topic.title}</strong>
-                {item.available ? (
-                  <button
-                    className="button primary small"
-                    onClick={() => void openAttempt2(item.session_id)}
-                  >
-                    Record attempt 2
-                  </button>
-                ) : (
-                  <span className="small muted">Opens tomorrow</span>
-                )}
+            {shownReady.map((item) => (
+              <li key={item.topic_id}>
+                <button
+                  className="text-button"
+                  onClick={() => navigate(topicPath(item.topic_id))}
+                >
+                  {item.topic.title}
+                  <ArrowRight size={14} />
+                </button>
+                <span className="ready-meta small muted">
+                  {item.due && <span className="tag">due</span>}
+                  {item.attempt_count}{" "}
+                  {item.attempt_count === 1 ? "attempt" : "attempts"} · last{" "}
+                  {dateLabel(item.last_attempt_at)}
+                </span>
               </li>
             ))}
           </ul>
-          {loadError && <ErrorNotice message={loadError} retry={loadQueue} />}
-          {queueError && <ErrorNotice message={queueError} />}
+          {ready.length > READY_SHOWN && (
+            <button
+              className="text-button muted"
+              aria-expanded={showAllReady}
+              onClick={() => setShowAllReady((v) => !v)}
+            >
+              {showAllReady ? "Show fewer" : `Show all (${ready.length})`}
+            </button>
+          )}
+          {readyError && <ErrorNotice message={readyError} retry={loadReady} />}
         </section>
       )}
       <div className="today-grid">
-        <section className="topic-hero" aria-label="Suggested practice">
+        <section className="topic-hero" aria-label="Suggested topics">
           <div className="hero-top">
-            <span className="eyebrow">Suggested topic</span>
-            <button
-              className="text-button"
-              aria-label="Choose another random topic"
-              disabled={busy}
-              onClick={onShuffle}
-            >
-              <Shuffle size={15} /> Another topic
-            </button>
+            <span className="eyebrow">Suggested topics</span>
+            <div className="hero-actions">
+              {practisedPill}
+              <button
+                className="text-button"
+                aria-label="Choose another random topic"
+                disabled={busy || (!selected && !!emptyMessage)}
+                onClick={onShuffle}
+              >
+                <Shuffle size={15} /> Another topic
+              </button>
+            </div>
           </div>
           {selected ? (
             <>
               <div className="topic-tags">
                 <span>{selected.category}</span>
                 <span className="difficulty">{selected.difficulty}</span>
+                {selectedPractised && <span className="tag">Practised</span>}
               </div>
               <h2>{selected.title}</h2>
               <p className="hero-prompt">{selected.prompt}</p>
@@ -136,9 +151,18 @@ export function Today({
                 <button
                   className="button primary"
                   disabled={busy}
-                  onClick={() => onStart()}
+                  onClick={() => onOpen(selected)}
                 >
-                  <Mic size={17} /> Begin your practice <ArrowRight size={16} />
+                  {selectedPractised ? (
+                    <>
+                      Open topic <ArrowRight size={16} />
+                    </>
+                  ) : (
+                    <>
+                      <Mic size={17} /> Begin your practice{" "}
+                      <ArrowRight size={16} />
+                    </>
+                  )}
                 </button>
                 <button
                   className="button ghost"
@@ -149,18 +173,14 @@ export function Today({
               </div>
               <p className="hero-reason">{reason}</p>
             </>
+          ) : emptyMessage ? (
+            <p className="hero-empty">{emptyMessage}</p>
           ) : (
             <Loading />
           )}
-          <details className="practice-settings">
-            <summary>
-              Practice settings <span>Duration, prompt & delivery</span>
-            </summary>
-            {settings}
-          </details>
         </section>
         <aside className="daily-loop">
-          <h2>A session, in three parts</h2>
+          <h2>A topic, in three parts</h2>
           {[
             [
               "01",
@@ -170,12 +190,12 @@ export function Today({
             [
               "02",
               "Work through the gaps",
-              "Review your explanation and study one idea at a time.",
+              "Read your review and ask the coach about one idea at a time.",
             ],
             [
               "03",
               "Explain it again",
-              "Put the notes away and see what changed.",
+              "On a later day, put the notes away and see what changed.",
             ],
           ].map(([number, title, description]) => (
             <div className="loop-item" key={number}>
@@ -187,46 +207,22 @@ export function Today({
             </div>
           ))}
           <p className="loop-note">
-            <BookOpen size={15} /> Reviews bring topics back for a fresh
-            explanation on another day.
+            <BookOpen size={15} /> Every attempt and its coach chat stay on the
+            topic’s page.
           </p>
         </aside>
       </div>
-      <div className="home-bottom">
-        <section className="review-card">
-          <span className="eyebrow">Review queue</span>
-          <h2>
-            {due.length
-              ? `${due.length} topic${due.length === 1 ? "" : "s"} ready to revisit`
-              : "Room to remember"}
-          </h2>
-          <p>
-            {due.length
-              ? "Start with a cold explanation to find out what you retained."
-              : reviews.length
-                ? `Your next review is ${dateLabel(reviews[0].due)}.`
-                : "Complete a session to schedule your first review."}
-          </p>
-          <button
-            className="text-button"
-            onClick={() =>
-              due.length ? onStart(due[0].topic) : navigate("history")
-            }
-          >
-            {due.length ? "Start a memory check" : "View practice history"}
-            <ArrowRight size={15} />
-          </button>
-        </section>
+      <div className="home-bottom single">
         <section className="progress-card">
           <span className="eyebrow">Your practice</span>
           <div className="practice-numbers">
             <div>
-              <strong>{complete.length}</strong>
-              <span>sessions completed</span>
+              <strong>{history.length}</strong>
+              <span>topics practised</span>
             </div>
             <div>
-              <strong>{new Set(complete.map((s) => s.topic.id)).size}</strong>
-              <span>topics practiced</span>
+              <strong>{attempts}</strong>
+              <span>attempts recorded</span>
             </div>
           </div>
         </section>

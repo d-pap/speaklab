@@ -33,7 +33,7 @@ const validLimit = (field: Limit, value: number) =>
   value >= LIMITS[field].min &&
   value <= LIMITS[field].max;
 
-type InstalledModel = {
+export type InstalledModel = {
   name: string;
   size_bytes: number;
   parameters: string;
@@ -41,7 +41,7 @@ type InstalledModel = {
   selectable: boolean;
   reason: string | null;
 };
-type Catalog = { selected: string; models: InstalledModel[] };
+export type Catalog = { selected: string; models: InstalledModel[] };
 
 export function ModelPicker({ onSaved }: { onSaved: (model: string) => void }) {
   const [catalog, setCatalog] = useState<Catalog | null>(null);

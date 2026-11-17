@@ -17,15 +17,12 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class SessionCreate(StrictModel):
-    topic_id: str = Field(max_length=80)
-    duration: int = Field(default=120, ge=120, le=300)
-    style: Style = "Conversational"
-    prompt_kind: PromptKind = "Concept explanation"
+class AttemptSettings(StrictModel):
+    """Form fields sent with a recording. Omitted ones carry over from the thread's latest attempt."""
 
-
-class StageChange(StrictModel):
-    stage: Literal["record1", "review1", "record2", "review2"]
+    prompt_kind: PromptKind | None = None
+    style: Style | None = None
+    duration: int | None = Field(default=None, ge=120, le=300)
 
 
 class TranscriptEdit(StrictModel):
@@ -52,12 +49,21 @@ class PassSettings(StrictModel):
 
 class ChatInput(StrictModel):
     message: str = Field(min_length=1, max_length=4000)
-    attempt_number: Literal[1, 2]
+    attempt_number: int = Field(ge=1)
 
 
 class LearnerNote(StrictModel):
     text: str | None = Field(default=None, max_length=2000)
     skip: bool = False
+
+
+class ResponseFeedback(StrictModel):
+    rating: Literal[-1, 1] | None
+    reason: Literal[
+        "incorrect", "missed_insight", "wrong_diagnosis", "teaching", "too_vague", "too_long", "style", "other"
+    ] | None = None
+    comment: str = Field(default="", max_length=4000)
+    preferred_response: str = Field(default="", max_length=20000)
 
 
 # Coach pass outputs. ID fields are plain strings here; each pass narrows them with

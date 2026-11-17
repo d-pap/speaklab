@@ -1,10 +1,10 @@
 import json
 import threading
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from conftest import MINIMAL_REVIEW, TRANSCRIPT, create, open_attempt2, upload
+from conftest import MINIMAL_REVIEW, TRANSCRIPT, get_thread, next_day, upload
 
 from app import db, models, pipeline, progress
 
@@ -35,8 +35,8 @@ def statuses(attempt):
 
 
 def test_pipeline_runs_phase1_then_waits_for_note(client, wav_bytes, fake_llm):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     assert attempt["status"] == "ready"
     assert attempt["note_state"] == "pending"
     assert attempt["lines"][0]["id"] == "L1" and attempt["tokens"]
@@ -61,13 +61,12 @@ def test_pipeline_runs_phase1_then_waits_for_note(client, wav_bytes, fake_llm):
 
 
 def test_note_submit_runs_writer_and_creates_review_message(client, wav_bytes, fake_llm):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
     assert client.post(f"/api/attempts/{attempt['id']}/note", json={"text": "x" * 2001}).status_code == 422
     response = client.post(f"/api/attempts/{attempt['id']}/note", json={"text": "  I rushed the ending.  "})
     assert response.status_code == 200, response.text
     assert client.post(f"/api/attempts/{attempt['id']}/note", json={"skip": True}).status_code == 409
-    detail = client.get(f"/api/sessions/{session['id']}").json()
+    detail = get_thread(client)
     stored = detail["attempts"][0]
     assert stored["note_state"] == "submitted" and stored["learner_note"] == "I rushed the ending."
     assert stored["status"] == "ready"
@@ -88,8 +87,8 @@ def test_note_submit_runs_writer_and_creates_review_message(client, wav_bytes, f
 
 def test_note_skip_before_phase1_finishes_is_picked_up_by_phase1(client, wav_bytes, monkeypatch, fake_llm):
     monkeypatch.setattr(pipeline, "submit", lambda _: None)
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     assert client.post(f"/api/attempts/{attempt['id']}/note", json={"skip": True}).status_code == 200
     assert fake_llm.requests_for("writer") == []
     pipeline.process(attempt["id"])
@@ -101,8 +100,8 @@ def test_note_skip_before_phase1_finishes_is_picked_up_by_phase1(client, wav_byt
 def test_writer_phase_starts_after_note_timeout(client, wav_bytes, monkeypatch):
     monkeypatch.setattr(pipeline, "NOTE_TIMEOUT_SECONDS", 0)
     monkeypatch.setattr(threading, "Timer", ImmediateTimer)
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     stored = attempt_row(attempt["id"])
     assert stored["note_state"] == "skipped"
     assert statuses(stored)["writer"] == "done"
@@ -114,8 +113,8 @@ def test_writer_phase_starts_after_note_timeout(client, wav_bytes, monkeypatch):
 
 def test_pipeline_keeps_earlier_passes_when_later_pass_fails(client, wav_bytes, fake_llm):
     fake_llm.queue("communication", httpx.ConnectError("offline"))
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     assert attempt["status"] == "partial"
     assert attempt["transcript"] == TRANSCRIPT and attempt["lines"]
     assert statuses(attempt) == {
@@ -138,8 +137,8 @@ def test_pipeline_keeps_earlier_passes_when_later_pass_fails(client, wav_bytes, 
 
 
 def test_writer_failure_keeps_review_structure_and_retry_writes_message(client, wav_bytes, fake_llm):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     fake_llm.queue("writer", fake_llm.defaults["writer"], httpx.ConnectError("offline"))
     client.post(f"/api/attempts/{attempt['id']}/note", json={"skip": True})
     failed = attempt_row(attempt["id"])
@@ -160,7 +159,7 @@ def test_prompt_too_long_is_a_failed_pass_with_a_readable_error(client, wav_byte
         raise llm.PromptTooLong("The technical prompt is too long for the model's context window.")
 
     monkeypatch.setattr(coach, "technical_pass", too_long)
-    attempt = upload(client, create(client), wav_bytes)
+    attempt = upload(client, wav_bytes)
     passes = attempt["analysis"]["passes"]
     assert passes["technical"]["status"] == "failed"
     assert "too long" in passes["technical"]["error"]
@@ -169,8 +168,8 @@ def test_prompt_too_long_is_a_failed_pass_with_a_readable_error(client, wav_byte
 
 def test_too_short_attempt_gets_no_scores(client, wav_bytes, monkeypatch, fake_llm):
     monkeypatch.setattr(models, "transcribe", lambda *args: ("Testing one two three.", []))
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     assert attempt["analysis"]["review"] == {"too_short": True}
     assert set(statuses(attempt).values()) == {"skipped"}
     assert attempt["transcript"] == "Testing one two three." and attempt["lines"]
@@ -181,8 +180,8 @@ def test_too_short_attempt_gets_no_scores(client, wav_bytes, monkeypatch, fake_l
 
 
 def test_review_receives_folded_notes(client, wav_bytes, fake_llm):
-    first_session = create(client)
-    first = upload(client, first_session, wav_bytes)
+    first = upload(client, wav_bytes)
+    first_session = {"id": first["session_id"]}
     client.post(f"/api/attempts/{first['id']}/note", json={"skip": True})
     with db.connect() as conn:
         for role, text in (("user", "I'm working on keeping things light."), ("assistant", "Try a light opener.")):
@@ -192,7 +191,7 @@ def test_review_receives_folded_notes(client, wav_bytes, fake_llm):
             )
     notes = "## Focus: keeping things light\nSince today. Said they are working on keeping things light."
     fake_llm.queue("memory", notes)
-    second = upload(client, create(client), wav_bytes)
+    second = upload(client, wav_bytes, "caching")
     assert second["analysis"]["passes"]["memory"]["status"] == "done"
     assert second["analysis"]["passes"]["memory"]["model"]
     memory_request = fake_llm.requests_for("memory")[0]
@@ -204,11 +203,10 @@ def test_review_receives_folded_notes(client, wav_bytes, fake_llm):
 
 
 def test_memory_failure_is_recorded_without_blocking(client, wav_bytes, fake_llm):
-    first_session = create(client)
-    first = upload(client, first_session, wav_bytes)
+    first = upload(client, wav_bytes)
     client.post(f"/api/attempts/{first['id']}/note", json={"skip": True})
     fake_llm.queue("memory", httpx.ConnectError("offline"))
-    second = upload(client, create(client), wav_bytes)
+    second = upload(client, wav_bytes, "caching")
     passes = second["analysis"]["passes"]
     assert passes["memory"]["status"] == "failed" and passes["memory"]["error"]
     assert passes["technical"]["status"] == passes["communication"]["status"] == "done"
@@ -216,8 +214,8 @@ def test_memory_failure_is_recorded_without_blocking(client, wav_bytes, fake_llm
 
 
 def test_note_deadline_survives_restart(client, wav_bytes):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     assert statuses(attempt)["writer"] == "waiting"
     past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     db.execute("UPDATE attempts SET note_deadline=? WHERE id=?", (past, attempt["id"]))
@@ -227,39 +225,38 @@ def test_note_deadline_survives_restart(client, wav_bytes):
     assert attempt_row(attempt["id"])["note_state"] == "skipped"
 
 
-def test_session_detail_sweeps_expired_note_deadlines(client, wav_bytes):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+def test_thread_view_sweeps_expired_note_deadlines(client, wav_bytes):
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     future = (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()
     db.execute("UPDATE attempts SET note_deadline=? WHERE id=?", (future, attempt["id"]))
-    client.get(f"/api/sessions/{session['id']}")
+    get_thread(client)
     assert review_messages(session["id"]) == []
     past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     db.execute("UPDATE attempts SET note_deadline=? WHERE id=?", (past, attempt["id"]))
-    detail = client.get(f"/api/sessions/{session['id']}").json()
+    detail = get_thread(client)
     assert [m["kind"] for m in detail["messages"]] == ["review"]
 
 
 def test_attempt2_review_receives_attempt1_review(client, wav_bytes, fake_llm):
-    session = create(client)
-    first = upload(client, session, wav_bytes)
+    first = upload(client, wav_bytes)
     client.post(f"/api/attempts/{first['id']}/note", json={"skip": True})
-    open_attempt2(client, session)
-    second = upload(client, session, wav_bytes, 2)
+    next_day(first["session_id"])
+    second = upload(client, wav_bytes)
     client.post(f"/api/attempts/{second['id']}/note", json={"skip": True})
     structure = fake_llm.requests_for("writer")[-2]
-    assert structure["payload"]["attempt_1_scores"][0] == {"name": "Overall", "score": 5.0}
+    assert structure["payload"]["previous_attempt_scores"][0] == {"name": "Overall", "score": 5.0}
     stored = attempt_row(second["id"])
     assert stored["analysis"]["review"]["comparison"]["changes"]
-    kinds = [(m["attempt_number"], m["kind"]) for m in client.get(f"/api/sessions/{session['id']}").json()["messages"]]
+    kinds = [(m["attempt_number"], m["kind"]) for m in get_thread(client)["messages"]]
     assert kinds == [(1, "review"), (2, "review")]
 
 
 def test_offline_models_still_allow_recording_and_transcript(client, wav_bytes, fake_llm):
     for name in ("technical", "communication", "writer", "memory"):
         fake_llm.defaults[name] = httpx.ConnectError("offline")
-    session = create(client)
-    first = upload(client, session, wav_bytes)
+    first = upload(client, wav_bytes)
+    session = {"id": first["session_id"]}
     assert first["status"] == "partial"
     assert first["transcript"] == TRANSCRIPT
     assert first["lines"] and first["tokens"]
@@ -273,15 +270,15 @@ def test_offline_models_still_allow_recording_and_transcript(client, wav_bytes, 
     }
     assert client.post(f"/api/attempts/{first['id']}/note", json={"text": "Felt shaky."}).status_code == 200
     assert client.get(f"/api/attempts/{first['id']}/audio").content == wav_bytes
-    open_attempt2(client, session)
-    second = upload(client, session, wav_bytes, 2)
+    next_day(session["id"])
+    second = upload(client, wav_bytes)
     assert second["transcript"] == TRANSCRIPT and second["status"] == "partial"
     assert review_messages(session["id"]) == []
 
 
 def test_replacing_transcript_resets_analysis_and_review(client, wav_bytes, fake_llm):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     client.post(f"/api/attempts/{attempt['id']}/note", json={"skip": True})
     assert len(review_messages(session["id"])) == 1
     text = "Um a hash map maps each key to a value by hashing the key to pick one bucket in an array."
@@ -299,8 +296,8 @@ def test_replacing_transcript_resets_analysis_and_review(client, wav_bytes, fake
 
 
 def test_legacy_attempt_edit_archives_assessment_and_gets_new_review(client, wav_bytes):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     legacy = {"summary": "Legacy summary.", "concepts": []}
     db.execute(
         "UPDATE attempts SET analysis=NULL, lines=NULL, tokens=NULL, assessment=?, note_state='legacy' WHERE id=?",
@@ -320,8 +317,8 @@ def test_note_timeout_runs_writer_through_real_timer_and_executor(client, wav_by
     monkeypatch.setattr(pipeline, "NOTE_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(threading, "Timer", REAL_TIMER)
     monkeypatch.setattr(pipeline, "submit_writer", REAL_SUBMIT_WRITER)
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and not review_messages(session["id"]):
         time.sleep(0.02)
@@ -333,8 +330,8 @@ def test_note_timeout_runs_writer_through_real_timer_and_executor(client, wav_by
 
 
 def test_queued_writer_survives_restart(client, wav_bytes, monkeypatch):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     monkeypatch.setattr(pipeline, "submit_writer", lambda _: None)  # the process dies before write starts
     assert client.post(f"/api/attempts/{attempt['id']}/note", json={"skip": True}).status_code == 200
     assert statuses(attempt_row(attempt["id"]))["writer"] == "pending"
@@ -348,8 +345,8 @@ def test_queued_writer_survives_restart(client, wav_bytes, monkeypatch):
 
 
 def test_writer_interrupted_by_crash_is_recovered_by_retry(client, wav_bytes, monkeypatch):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     monkeypatch.setattr(pipeline, "submit_writer", lambda _: None)
     client.post(f"/api/attempts/{attempt['id']}/note", json={"skip": True})
     # Simulate a crash in the middle of write(): writer running, attempt processing.
@@ -373,49 +370,27 @@ def test_transcription_offline_keeps_recording_and_runs_no_model_pass(client, wa
         raise models.ServiceUnavailable("Explicitly offline for this test.")
 
     monkeypatch.setattr(models, "transcribe", unavailable)
-    session = create(client)
-    first = upload(client, session, wav_bytes)
+    first = upload(client, wav_bytes)
+    session = {"id": first["session_id"]}
     assert first["status"] == "partial"
     assert first["errors"]["transcription"] == "Explicitly offline for this test."
     assert first["transcript"] is None and first["analysis"] is None
     assert first["acoustics"]["duration"] == 2.6
     assert first["acoustics"].get("wpm") is None
     assert client.get(first["audio_url"]).content == wav_bytes
-    open_attempt2(client, session)
-    second = upload(client, session, wav_bytes, 2)
+    next_day(session["id"])
+    second = upload(client, wav_bytes)
     assert second["status"] == "partial" and second["acoustics"]["duration"] == 2.6
     assert fake_llm.requests == []
 
 
-# Day split, automatic completion and the Today queue
+# Spaced review, Today and recommendations
 
 
-class FrozenDate(date):
-    offset = 0
-
-    @classmethod
-    def today(cls):
-        return date.today() + timedelta(days=cls.offset)
-
-
-def freeze_days_ahead(monkeypatch, days):
-    from app import main
-
-    monkeypatch.setattr(FrozenDate, "offset", days, raising=False)
-    monkeypatch.setattr(main, "date", FrozenDate)
-
-
-def review_attempt1(client, session, wav_bytes):
-    first = upload(client, session, wav_bytes)
+def review_attempt1(client, wav_bytes):
+    first = upload(client, wav_bytes)
     assert client.post(f"/api/attempts/{first['id']}/note", json={"skip": True}).status_code == 200
     return first
-
-
-open_day2 = open_attempt2
-
-
-def session_row(session_id):
-    return db.one("SELECT * FROM sessions WHERE id=?", (session_id,))
 
 
 def test_derived_recall_thresholds():
@@ -430,194 +405,80 @@ def test_derived_recall_thresholds():
     ]
 
 
-def test_upload_sets_attempt2_after_tomorrow(client, wav_bytes):
-    session = create(client)
-    upload(client, session, wav_bytes)
-    row = session_row(session["id"])
-    assert row["stage"] == "review1"
-    assert row["attempt2_after"] == (date.today() + timedelta(days=1)).isoformat()
-
-
-def test_attempt2_same_day_is_refused(client, wav_bytes):
-    session = create(client)
-    review_attempt1(client, session, wav_bytes)
-    response = client.put(f"/api/sessions/{session['id']}/stage", json={"stage": "record2"})
-    assert response.status_code == 409
-    assert response.json()["detail"] == "Attempt 2 opens tomorrow so it tests what you remember."
-    assert session_row(session["id"])["stage"] == "review1"
-
-
-def test_attempt2_allowed_next_day(client, wav_bytes, monkeypatch):
-    session = create(client)
-    review_attempt1(client, session, wav_bytes)
-    freeze_days_ahead(monkeypatch, 1)
-    response = client.put(f"/api/sessions/{session['id']}/stage", json={"stage": "record2"})
-    assert response.status_code == 200 and response.json()["stage"] == "record2"
-    upload(client, session, wav_bytes, 2)
-    assert session_row(session["id"])["stage"] == "review2"
-
-
-def test_old_stage_names_are_rejected(client, wav_bytes):
-    session = create(client)
-    for name in ("feedback", "learn", "compare"):
-        assert client.put(f"/api/sessions/{session['id']}/stage", json={"stage": name}).status_code == 422
-
-
-def test_session_autocompletes_after_attempt2_review_and_schedules(client, wav_bytes):
-    session = create(client)
-    review_attempt1(client, session, wav_bytes)
-    open_day2(client, session)
-    second = upload(client, session, wav_bytes, 2)
-    assert session_row(session["id"])["completed_at"] is None  # the review is still to come
-    assert client.post(f"/api/attempts/{second['id']}/note", json={"skip": True}).status_code == 200
-    stored = attempt_row(second["id"])
+def test_reviewed_attempt_schedules_from_its_mastery(client, wav_bytes):
+    first = review_attempt1(client, wav_bytes)
+    stored = attempt_row(first["id"])
     concepts = stored["analysis"]["technical"]["concepts"]
     mastery = sum(c["status"] == "correct" for c in concepts) / len(concepts)
-    done = session_row(session["id"])
-    assert done["completed_at"] and done["stage"] == "review2"
-    assert done["recall"] == progress.derived_recall(mastery)
-    days, repetitions, due = progress.schedule(None, done["recall"], mastery)
-    assert done["review_due"] == due
+    days, repetitions, due = progress.schedule(None, progress.derived_recall(mastery), mastery)
     review = db.one("SELECT * FROM reviews WHERE topic_id='hash-maps'")
     assert (review["interval_days"], review["repetitions"], review["due"]) == (days, repetitions, due)
-    assert review["last_session_id"] == session["id"]
+    assert review["last_session_id"] == first["session_id"]
     # Running it again changes nothing.
-    pipeline.complete_session(session["id"])
-    assert session_row(session["id"])["completed_at"] == done["completed_at"]
+    pipeline.after_review_written(first["id"])
     assert db.one("SELECT * FROM reviews WHERE topic_id='hash-maps'") == review
-    assert client.get("/api/sessions/%s" % session["id"]).json()["completed_at"]
+    session = db.one("SELECT * FROM sessions WHERE id=?", (first["session_id"],))
+    assert session["completed_at"] is None and session["review_due"] is None
 
 
-def test_good_attempt2_schedules_a_longer_interval(client, wav_bytes):
-    session = create(client)
-    review_attempt1(client, session, wav_bytes)
-    open_day2(client, session)
-    second = upload(client, session, wav_bytes, 2)
-    analysis = json.loads(db.one("SELECT analysis FROM attempts WHERE id=?", (second["id"],))["analysis"])
+def test_good_attempt_schedules_a_longer_interval(client, wav_bytes):
+    attempt = upload(client, wav_bytes)  # the note box is open: its review is still to come
+    analysis = json.loads(db.one("SELECT analysis FROM attempts WHERE id=?", (attempt["id"],))["analysis"])
     for concept in analysis["technical"]["concepts"]:
         concept["status"] = "correct"
-    db.execute("UPDATE attempts SET analysis=? WHERE id=?", (json.dumps(analysis), second["id"]))
-    pipeline.complete_session(session["id"])
-    done = session_row(session["id"])
-    assert done["recall"] == "good"
+    db.execute("UPDATE attempts SET analysis=? WHERE id=?", (json.dumps(analysis), attempt["id"]))
+    pipeline.after_review_written(attempt["id"])
     assert db.one("SELECT interval_days FROM reviews WHERE topic_id='hash-maps'")["interval_days"] == 3
 
 
-def test_too_short_attempt2_still_completes_with_again(client, wav_bytes, monkeypatch):
-    session = create(client)
-    review_attempt1(client, session, wav_bytes)
-    open_day2(client, session)
-    monkeypatch.setattr(models, "transcribe", lambda path, duration: ("Um, testing.", [{"start": 0, "end": 1, "text": "Um, testing."}]))
-    second = upload(client, session, wav_bytes, 2)
-    assert attempt_row(second["id"])["analysis"]["review"] == {"too_short": True}
-    done = session_row(session["id"])
-    assert done["completed_at"] and done["recall"] == "again"
-    assert done["review_due"] == (date.today() + timedelta(days=1)).isoformat()
-    assert db.one("SELECT interval_days FROM reviews WHERE topic_id='hash-maps'")["interval_days"] == 1
+def test_only_the_latest_attempt_reschedules(client, wav_bytes):
+    first = upload(client, wav_bytes)  # review still to come
+    next_day(first["session_id"])
+    review_attempt1(client, wav_bytes)
+    before = db.one("SELECT * FROM reviews WHERE topic_id='hash-maps'")
+    client.post(f"/api/attempts/{first['id']}/note", json={"skip": True})  # a late review of attempt 1
+    assert attempt_row(first["id"])["analysis"]["passes"]["writer"]["status"] == "done"
+    assert db.one("SELECT * FROM reviews WHERE topic_id='hash-maps'") == before
 
 
-def test_too_short_attempt1_does_not_complete(client, wav_bytes, monkeypatch):
+def test_too_short_attempt_does_not_schedule(client, wav_bytes, monkeypatch):
     monkeypatch.setattr(models, "transcribe", lambda path, duration: ("Um, testing.", [{"start": 0, "end": 1, "text": "Um, testing."}]))
-    session = create(client)
-    upload(client, session, wav_bytes)
-    assert session_row(session["id"])["completed_at"] is None
+    upload(client, wav_bytes)
+    assert db.all_rows("SELECT * FROM reviews") == []
 
 
 def test_too_short_attempt1_can_be_recorded_again(client, wav_bytes, monkeypatch):
     monkeypatch.setattr(models, "transcribe", lambda path, duration: ("Um, testing.", [{"start": 0, "end": 1, "text": "Um, testing."}]))
-    session = create(client)
-    first = upload(client, session, wav_bytes)
+    first = upload(client, wav_bytes)
     assert attempt_row(first["id"])["analysis"]["review"] == {"too_short": True}
-    response = client.put(f"/api/sessions/{session['id']}/stage", json={"stage": "record1"})
-    assert response.status_code == 200 and response.json()["stage"] == "record1"
+    assert get_thread(client)["recording"]["replace_number"] == 1
     monkeypatch.setattr(models, "transcribe", lambda path, duration: (TRANSCRIPT, [{"start": 0, "end": 2.6, "text": TRANSCRIPT}]))
-    second = upload(client, session, wav_bytes)
-    assert second["id"] != first["id"]
+    second = upload(client, wav_bytes)
+    assert second["id"] != first["id"] and second["number"] == 1
     assert db.one("SELECT id FROM attempts WHERE id=?", (first["id"],)) is None
-    assert session_row(session["id"])["stage"] == "review1"
 
 
-def test_attempt2_recorder_is_closed_once_attempt2_exists(client, wav_bytes):
-    """review2 -> record2 would leave the session where every action is refused once it completes."""
-    session = create(client)
-    review_attempt1(client, session, wav_bytes)
-    open_day2(client, session)
-    second = upload(client, session, wav_bytes, 2)
-    assert session_row(session["id"])["completed_at"] is None  # the note box is still open
-    response = client.put(f"/api/sessions/{session['id']}/stage", json={"stage": "record2"})
-    assert response.status_code == 409
-    assert "preserved" in response.json()["detail"]
-    assert session_row(session["id"])["stage"] == "review2"
-    assert client.post(f"/api/attempts/{second['id']}/note", json={"skip": True}).status_code == 200
-    assert session_row(session["id"])["completed_at"]
+def test_open_attempt_never_expires(client, wav_bytes, monkeypatch):
+    from datetime import date as real_date
+
+    from app import threads
+
+    first = review_attempt1(client, wav_bytes)
+    monkeypatch.setattr(threads, "today", lambda: real_date.today() + timedelta(days=30))
+    [item] = client.get("/api/practice/ready").json()
+    assert item["session_id"] == first["session_id"] and item["can_record"] is True and item["due"] is True
 
 
-def test_completing_a_session_leaves_it_at_review2(client, wav_bytes):
-    session = create(client)
-    review_attempt1(client, session, wav_bytes)
-    open_day2(client, session)
-    upload(client, session, wav_bytes, 2)
-    # A session that reached the recorder again before this fix, with attempt 2 still being reviewed.
-    db.execute("UPDATE sessions SET stage='record2' WHERE id=?", (session["id"],))
-    pipeline.complete_session(session["id"])
-    done = session_row(session["id"])
-    assert done["completed_at"] and done["stage"] == "review2"
-
-
-def test_reviewed_attempt1_cannot_return_to_record1(client, wav_bytes):
-    session = create(client)
-    upload(client, session, wav_bytes)
-    response = client.put(f"/api/sessions/{session['id']}/stage", json={"stage": "record1"})
-    assert response.status_code == 409
-    assert "preserved" in response.json()["detail"]
-
-
-def test_today_queue_lists_pending_attempt2_and_hides_its_spaced_review(client, wav_bytes):
-    done = create(client)
-    review_attempt1(client, done, wav_bytes)
-    open_day2(client, done)
-    second = upload(client, done, wav_bytes, 2)
-    client.post(f"/api/attempts/{second['id']}/note", json={"skip": True})
-    assert [r["topic_id"] for r in client.get("/api/reviews").json()] == ["hash-maps"]
-    assert client.get("/api/attempt2").json() == []
-    db.execute("UPDATE reviews SET due='2000-01-01'")
-    pending = create(client)
-    review_attempt1(client, pending, wav_bytes)
-    assert client.get("/api/reviews").json() == []
-    [item] = client.get("/api/attempt2").json()
-    assert item["session_id"] == pending["id"] and item["topic"]["id"] == "hash-maps"
-    assert item["attempt2_after"] == (date.today() + timedelta(days=1)).isoformat()
-    assert item["available"] is False
-    open_day2(client, pending)  # record2 stays in the queue until attempt 2 is reviewed
-    assert client.get("/api/reviews").json() == []
-    assert client.get("/api/attempt2").json()[0]["available"] is True
-
-
-def test_pending_attempt2_never_expires(client, wav_bytes, monkeypatch):
-    session = create(client)
-    review_attempt1(client, session, wav_bytes)
-    freeze_days_ahead(monkeypatch, 30)
-    [item] = client.get("/api/attempt2").json()
-    assert item["session_id"] == session["id"] and item["available"] is True
-    assert session_row(session["id"])["completed_at"] is None
-
-
-def test_legacy_session_weak_topics_use_old_assessment(client, wav_bytes, monkeypatch):
+def test_legacy_attempt_weak_topics_use_old_assessment(client, wav_bytes, monkeypatch):
     from app import main
 
-    legacy = create(client)
-    upload(client, legacy, wav_bytes)
-    modern = create(client)
-    upload(client, modern, wav_bytes)
-    # Legacy: attempt 2 only has the old assessment (1 of 4 correct).
+    first = upload(client, wav_bytes)
+    sid = first["session_id"]
+    # A legacy attempt 2 has only the old assessment (1 of 4 correct).
     db.execute(
         "INSERT INTO attempts(id,session_id,number,created_at,audio_file,wav_file,mime,duration,assessment) "
         "VALUES('legacy2',?,2,'2026-10-01T00:00:00+00:00','a','w','audio/wav',3,?)",
-        (legacy["id"], json.dumps({"concepts": [{"status": "correct"}] + [{"status": "missing"}] * 3})),
-    )
-    db.execute(
-        "UPDATE sessions SET completed_at='2026-10-01T00:00:00+00:00', created_at='2026-10-01T00:00:00+00:00' WHERE id=?",
-        (legacy["id"],),
+        (sid, json.dumps({"concepts": [{"status": "correct"}] + [{"status": "missing"}] * 3})),
     )
     seen = {}
 
@@ -626,32 +487,23 @@ def test_legacy_session_weak_topics_use_old_assessment(client, wav_bytes, monkey
         return candidates[0]
 
     monkeypatch.setattr(main, "recommend", spy)
-    assert client.get("/api/topics/recommend").status_code == 200
+    assert client.get("/api/topics/recommend", params={"include_practised": "true"}).status_code == 200
     assert seen == {"hash-maps": 0.75}
-    # A newer session with the new analysis replaces the legacy figure.
+    # A later attempt with the new analysis replaces the legacy figure.
     technical = {"concepts": [{"status": "correct"}] * 3 + [{"status": "missing"}]}
     db.execute(
         "INSERT INTO attempts(id,session_id,number,created_at,audio_file,wav_file,mime,duration,analysis) "
-        "VALUES('new2',?,2,'2026-10-02T00:00:00+00:00','a','w','audio/wav',3,?)",
-        (modern["id"], json.dumps({"technical": technical})),
+        "VALUES('new3',?,3,'2026-10-02T00:00:00+00:00','a','w','audio/wav',3,?)",
+        (sid, json.dumps({"technical": technical})),
     )
-    db.execute("UPDATE sessions SET completed_at='2026-10-02T00:00:00+00:00', created_at='2026-10-02T00:00:00+00:00' WHERE id=?", (modern["id"],))
     seen.clear()
-    client.get("/api/topics/recommend")
+    client.get("/api/topics/recommend", params={"include_practised": "true"})
     assert seen == {"hash-maps": 0.25}
 
 
-def test_note_refused_for_completed_session(client, wav_bytes):
-    session = create(client)
-    first = upload(client, session, wav_bytes)
-    db.execute("UPDATE sessions SET completed_at='2026-10-27T12:00:00+00:00' WHERE id=?", (session["id"],))
-    response = client.post(f"/api/attempts/{first['id']}/note", json={"skip": True})
-    assert response.status_code == 409
-
-
 def test_rereview_archives_previous_and_reruns(client, wav_bytes, fake_llm):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     client.post(f"/api/attempts/{attempt['id']}/note", json={"skip": True})
     assert len(review_messages(session["id"])) == 1
     response = client.post(f"/api/attempts/{attempt['id']}/rereview")
@@ -670,8 +522,8 @@ def test_rereview_archives_previous_and_reruns(client, wav_bytes, fake_llm):
 
 
 def test_rereview_upgrades_legacy_attempt_and_keeps_completed_schedule(client, wav_bytes):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     legacy = {"summary": "Legacy summary.", "concepts": []}
     db.execute(
         "UPDATE attempts SET analysis=NULL, lines=NULL, tokens=NULL, assessment=?, note_state='legacy' WHERE id=?",
@@ -681,6 +533,7 @@ def test_rereview_upgrades_legacy_attempt_and_keeps_completed_schedule(client, w
         "UPDATE sessions SET completed_at='2026-10-27T12:00:00+00:00', review_due='2026-10-30' WHERE id=?",
         (session["id"],),
     )
+    db.execute("INSERT INTO reviews VALUES('hash-maps',3,1,'2026-10-30',?)", (session["id"],))
     before = db.one("SELECT * FROM attempts WHERE id=?", (attempt["id"],))
     assert client.post(f"/api/attempts/{attempt['id']}/rereview").status_code == 200
     stored = attempt_row(attempt["id"])
@@ -690,12 +543,12 @@ def test_rereview_upgrades_legacy_attempt_and_keeps_completed_schedule(client, w
     assert len(review_messages(session["id"])) == 1
     history = client.get(f"/api/attempts/{attempt['id']}/analysis-history").json()
     assert history[0]["attempt"]["assessment"] == legacy
-    assert session_row(session["id"])["review_due"] == "2026-10-30"
+    review = db.one("SELECT * FROM reviews WHERE topic_id='hash-maps'")
+    assert (review["interval_days"], review["repetitions"], review["due"]) == (3, 1, "2026-10-30")
 
 
 def test_rereview_refused_while_processing(client, wav_bytes, fake_llm):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
     requests_before = len(fake_llm.requests)
     for status in ("pending", "processing"):
         db.execute("UPDATE attempts SET status=? WHERE id=?", (status, attempt["id"]))
@@ -708,8 +561,7 @@ def test_rereview_refused_while_processing(client, wav_bytes, fake_llm):
 
 
 def test_rereview_preserves_manual_transcript_and_never_retranscribes(client, wav_bytes, monkeypatch):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
     manual = "A hash map stores each key with its value and hashes the key to choose one bucket in an array."
     db.execute(
         "UPDATE attempts SET transcript=?, transcript_source='manual', transcription_version=0, "

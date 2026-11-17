@@ -3,6 +3,7 @@ import json
 import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 import httpx
 import numpy as np
@@ -65,29 +66,31 @@ def client(tmp_path, monkeypatch, fake_llm):
         yield client
 
 
-def create(client):
-    response = client.post("/api/sessions", json={"topic_id": "hash-maps"})
+def upload(client, wav_bytes, topic_id="hash-maps", **form):
+    """Record an attempt on the topic's thread; form fields (prompt_kind, style, duration) are optional."""
+    response = client.post(
+        f"/api/topics/{topic_id}/attempts",
+        files={"file": ("../../unsafe.wav", wav_bytes, "audio/wav")},
+        data={k: str(v) for k, v in form.items()},
+    )
     assert response.status_code == 201, response.text
     return response.json()
 
 
-def open_attempt2(client, session):
-    """Move the session to attempt 2 as if a day had passed since attempt 1."""
-    from app import db
-
-    db.execute("UPDATE sessions SET attempt2_after='2000-01-01' WHERE id=?", (session["id"],))
-    response = client.put(f"/api/sessions/{session['id']}/stage", json={"stage": "record2"})
+def get_thread(client, topic_id="hash-maps"):
+    response = client.get(f"/api/topics/{topic_id}/thread")
     assert response.status_code == 200, response.text
     return response.json()
 
 
-def upload(client, session, wav_bytes, number=1):
-    response = client.post(
-        f"/api/sessions/{session['id']}/attempts/{number}",
-        files={"file": ("../../unsafe.wav", wav_bytes, "audio/wav")},
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
+def next_day(session_id, days=1):
+    """Move the thread's attempts back in time, as if `days` had passed: the next attempt opens."""
+    from app import db
+
+    with db.connect() as conn:
+        for row in conn.execute("SELECT id, created_at FROM attempts WHERE session_id=?", (session_id,)).fetchall():
+            shifted = datetime.fromisoformat(row["created_at"]) - timedelta(days=days)
+            conn.execute("UPDATE attempts SET created_at=? WHERE id=?", (shifted.isoformat(), row["id"]))
 
 
 @dataclass
@@ -267,7 +270,7 @@ def _communication(record):
 def _writer(record):
     if "format" not in record["body"]:
         return MINIMAL_REVIEW
-    previous = record["payload"].get("attempt_1_scores")
+    previous = record["payload"].get("previous_attempt_scores")
     return {
         "scores": [{"name": name, "score": 5.0, "reason": "Test double estimate."} for name in CORE_SCORES],
         "key_points": [{"text": f"Key point {n}.", "line_ids": []} for n in (1, 2, 3)],

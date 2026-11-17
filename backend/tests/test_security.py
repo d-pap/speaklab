@@ -27,7 +27,7 @@ def test_browser_origin_configuration_is_canonical_and_does_not_change_model_bou
         Settings(_env_file=None, ollama_url="https://pc.example")
 
 
-def test_private_https_can_use_real_api_without_loosening_host_or_csrf_checks(client):
+def test_private_https_can_use_real_api_without_loosening_host_or_csrf_checks(client, wav_bytes):
     origin = "https://pc.tail-test.ts.net"
     config = Settings(_env_file=None, data_dir=settings.data_dir, browser_origins=[origin])
     protected = FastAPI()
@@ -37,16 +37,17 @@ def test_private_https_can_use_real_api_without_loosening_host_or_csrf_checks(cl
         response = browser.get("/api/topics", headers={"Origin": origin})
         assert response.status_code == 200
         assert response.headers["Access-Control-Allow-Origin"] == origin
-        response = browser.post("/api/sessions", headers={"Origin": origin, "X-SpeakLab-Client": "1"},
-                                json={"topic_id": "hash-maps"})
+        path = "/api/topics/hash-maps/attempts"
+        response = browser.post(path, headers={"Origin": origin, "X-SpeakLab-Client": "1"},
+                                files={"file": ("a.wav", wav_bytes, "audio/wav")})
         assert response.status_code == 201
-        assert client.get(f"/api/sessions/{response.json()['id']}").status_code == 200
-        assert browser.post("/api/sessions", headers={"Origin": origin},
-                            json={"topic_id": "hash-maps"}).status_code == 403
+        assert client.get(f"/api/sessions/{response.json()['session_id']}").status_code == 200
+        assert browser.post("/api/topics/caching/attempts", headers={"Origin": origin},
+                            files={"file": ("a.wav", wav_bytes, "audio/wav")}).status_code == 403
         for untrusted in ("https://other.tail-test.ts.net", "https://evil.example", "http://pc.tail-test.ts.net"):
             assert browser.get("/api/topics", headers={"Origin": untrusted}).status_code == 403
         assert browser.get("/api/topics", headers={"Host": "evil.example"}).status_code == 400
-        assert browser.options("/api/sessions", headers={
+        assert browser.options("/api/topics/hash-maps/attempts", headers={
             "Origin": origin, "Access-Control-Request-Method": "POST",
             "Access-Control-Request-Headers": "X-SpeakLab-Client,Content-Type",
         }).status_code == 200

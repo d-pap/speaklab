@@ -4,15 +4,15 @@ import json
 
 import httpx
 import pytest
-from conftest import MINIMAL_CHAT_REPLY, MINIMAL_CHAT_SUMMARY, MINIMAL_REVIEW, create, upload
+from conftest import MINIMAL_CHAT_REPLY, MINIMAL_CHAT_SUMMARY, MINIMAL_REVIEW, next_day, upload
 
 from app import chat, db, llm, main
 
 
 def ready(client, wav_bytes):
     """Attempt 1 recorded, note skipped, review written: the chat is open."""
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     response = client.post(f"/api/attempts/{attempt['id']}/note", json={"skip": True})
     assert response.status_code == 200, response.text
     return db.one("SELECT * FROM sessions WHERE id=?", (session["id"],)), db.one(
@@ -172,8 +172,8 @@ def test_truncated_reply_is_kept_with_a_warning(client, wav_bytes, fake_llm):
 
 
 def test_chat_refused_while_analysis_running(client, wav_bytes, fake_llm):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     # The note box is still open, so the writer is waiting.
     response = send(client, session["id"])
     assert response.status_code == 409
@@ -198,8 +198,8 @@ def set_passes(attempt_id, status, **passes):
 
 
 def test_chat_blocked_while_writer_waits_for_note(client, wav_bytes, fake_llm):
-    session = create(client)
-    attempt = upload(client, session, wav_bytes)
+    attempt = upload(client, wav_bytes)
+    session = {"id": attempt["session_id"]}
     assert json.loads(db.one("SELECT analysis FROM attempts WHERE id=?", (attempt["id"],))["analysis"])[
         "passes"
     ]["writer"]["status"] == "waiting"
@@ -254,8 +254,7 @@ def test_chat_allowed_for_too_short_attempt(client, wav_bytes, fake_llm, monkeyp
     from app import models
 
     monkeypatch.setattr(models, "transcribe", lambda path, duration: ("Testing one two.", []))
-    session = create(client)
-    upload(client, session, wav_bytes)
+    session = {"id": upload(client, wav_bytes)["session_id"]}
     response = send(client, session["id"])
     assert response.status_code == 200, response.text
     assert events(response)[-1]["done"] is True
@@ -280,7 +279,7 @@ def test_attempt_two_chat_refused_before_it_exists(client, wav_bytes, fake_llm):
     response = send(client, session["id"], attempt_number=2)
     assert response.status_code == 409
     assert "attempt 2" in response.json()["detail"].lower()
-    assert send(client, session["id"], attempt_number=3).status_code == 422
+    assert send(client, session["id"], attempt_number=0).status_code == 422
     assert send(client, session["id"], message="   ").status_code == 422
     assert fake_llm.requests_for("chat") == []
 
@@ -309,11 +308,11 @@ def test_context_fits_prompt_budget(client, wav_bytes):
 
 
 def test_replaced_attempt_drops_its_chat(client, wav_bytes, fake_llm):
-    session = create(client)
-    first = upload(client, session, wav_bytes)
+    first = upload(client, wav_bytes)
+    session = {"id": first["session_id"]}
     client.post(f"/api/attempts/{first['id']}/note", json={"skip": True})
-    db.execute("UPDATE sessions SET stage='record2' WHERE id=?", (session["id"],))
-    second = upload(client, session, wav_bytes, 2)
+    next_day(session["id"])
+    second = upload(client, wav_bytes)
     client.post(f"/api/attempts/{second['id']}/note", json={"skip": True})
     assert send(client, session["id"], "About attempt one").status_code == 200
     assert send(client, session["id"], "About attempt two", attempt_number=2).status_code == 200
@@ -321,9 +320,10 @@ def test_replaced_attempt_drops_its_chat(client, wav_bytes, fake_llm):
         "UPDATE attempts SET chat_summary='old summary', chat_summary_through=99 WHERE id=?", (second["id"],)
     )
 
-    # Attempt 2's review completed the session; reopen it as if that review had not finished.
-    db.execute("UPDATE sessions SET stage='record2', completed_at=NULL WHERE id=?", (session["id"],))
-    replaced = upload(client, session, wav_bytes, 2)
+    # Only a too-short latest attempt can be replaced; mark attempt 2 as one.
+    db.execute("UPDATE attempts SET analysis=? WHERE id=?", (json.dumps({"review": {"too_short": True}}), second["id"]))
+    replaced = upload(client, wav_bytes)
+    assert replaced["number"] == 2 and replaced["id"] != second["id"]
     remaining = [(m["attempt_number"], m["content"]) for m in chat_messages(session["id"])]
     assert remaining == [(1, "About attempt one"), (1, MINIMAL_CHAT_REPLY)]
     row = db.one("SELECT chat_summary, chat_summary_through FROM attempts WHERE id=?", (replaced["id"],))

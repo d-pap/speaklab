@@ -2,20 +2,22 @@ import { useEffect, useRef, useState } from "react";
 import { SendHorizontal } from "lucide-react";
 import { ChatNotSent, errorText, streamChat } from "./api";
 import { ErrorNotice } from "./components";
+import { CoachControls } from "./CoachControls";
 import { renderMarkdown } from "./markdown";
 import { renderParts, stripMarkersForStreaming } from "./markers";
 import { progressLine, reviewing } from "./Practice";
 import { isTooShort } from "./ReviewTab";
-import type { Message, Session } from "./types";
+import { ResponseFeedback } from "./ResponseFeedback";
+import type { Message, Thread } from "./types";
 
 export function CoachChat({
-  session,
+  thread,
   attemptNumber,
   onRef,
   onRefresh,
 }: {
-  session: Session;
-  attemptNumber: 1 | 2;
+  thread: Thread;
+  attemptNumber: number;
   onRef: (lineId: string) => void;
   onRefresh: () => Promise<void>;
 }) {
@@ -23,9 +25,10 @@ export function CoachChat({
   const [pending, setPending] = useState<string | null>(null);
   const [streamed, setStreamed] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [controlBusy, setControlBusy] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   // A reply keeps streaming after the chat unmounts (the backend still stores it), but a
-  // finished stream must not touch state or refetch a session the learner has left.
+  // finished stream must not touch state or refetch a topic the learner has left.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -33,8 +36,8 @@ export function CoachChat({
       mounted.current = false;
     };
   }, []);
-  const attempt = session.attempts.find((a) => a.number === attemptNumber);
-  const messages = session.messages
+  const attempt = thread.attempts.find((a) => a.number === attemptNumber);
+  const messages = thread.messages
     .filter((m) => (m.attempt_number ?? 1) === attemptNumber)
     .sort(
       (a, b) =>
@@ -51,13 +54,13 @@ export function CoachChat({
 
   async function send() {
     const text = draft.trim();
-    if (!text || busy || waiting) return;
+    if (!text || busy || controlBusy || waiting || !thread.session_id) return;
     setError("");
     setPending(text);
     setStreamed("");
     setDraft("");
     try {
-      await streamChat(session.id, attemptNumber, text, (delta) => {
+      await streamChat(thread.session_id, attemptNumber, text, (delta) => {
         if (mounted.current) setStreamed((s) => (s ?? "") + delta);
       });
     } catch (e) {
@@ -67,7 +70,7 @@ export function CoachChat({
       if (e instanceof ChatNotSent) setDraft((d) => d || text);
     }
     if (!mounted.current) return;
-    // The question is stored either way, so the session is the source of truth.
+    // The question is stored either way, so the thread is the source of truth.
     await onRefresh().catch(() => {});
     if (!mounted.current) return;
     setPending(null);
@@ -85,12 +88,33 @@ export function CoachChat({
         key={m.id}
         className={`message ${coach ? "coach md" : "me"} ${m.kind === "review" ? "review" : ""}`}
       >
-        {coach ? renderMarkdown(parts, onRef) : renderParts(parts, onRef)}
+        {coach && (
+          <div className="message-model small muted">
+            {m.kind === "review" ? "Review written by " : "Coach · "}
+            {m.model ??
+              (m.kind === "review"
+                ? attempt?.analysis?.passes?.writer.model
+                : null) ??
+              "Model not recorded"}
+          </div>
+        )}
+        <div className="message-content">
+          {coach ? renderMarkdown(parts, onRef) : renderParts(parts, onRef)}
+        </div>
+        {coach && <ResponseFeedback message={m} />}
       </div>
     );
   };
   return (
     <section className="coach-chat" aria-label="Coach chat">
+      {attempt && (
+        <CoachControls
+          attempt={attempt}
+          disabled={busy || waiting}
+          onBusyChange={setControlBusy}
+          onRefresh={onRefresh}
+        />
+      )}
       <div className="chat-log" aria-live="polite">
         {!hasReview && attempt && (
           <p className="small muted chat-placeholder">
@@ -132,7 +156,7 @@ export function CoachChat({
           maxLength={4000}
           placeholder="Ask about your attempt or the topic…"
           value={draft}
-          disabled={busy || waiting}
+          disabled={busy || controlBusy || waiting}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -145,7 +169,7 @@ export function CoachChat({
           type="submit"
           className="button primary small"
           aria-label="Send message"
-          disabled={busy || waiting || !draft.trim()}
+          disabled={busy || controlBusy || waiting || !draft.trim()}
         >
           <SendHorizontal size={16} />
         </button>

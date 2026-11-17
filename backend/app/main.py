@@ -2,28 +2,30 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager, contextmanager
-from datetime import date, timedelta
 from pathlib import Path
 from threading import Lock
+from typing import get_args
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import ValidationError
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.staticfiles import StaticFiles
 
-from . import chat, db, llm, markers, memory, models, pipeline, progress
+from . import chat, db, feedback, llm, markers, memory, models, pipeline, progress, threads
 from .audio import decode, detect_container
 from .config import ROOT, settings
 from .curriculum import CATALOG, TOPICS, prompt, public_topic, recommend, topic_for
 from .schemas import (
+    AttemptSettings,
     ChatInput,
     CoachNotesEdit,
     LearnerNote,
     ModelSelection,
     PassSettings,
-    SessionCreate,
-    StageChange,
+    PromptKind,
+    ResponseFeedback,
     TranscriptEdit,
 )
 from .security import configure_browser_security
@@ -58,7 +60,6 @@ tutor_lock = Lock()  # one coach chat reply at a time
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.initialize()
-    pipeline.complete_legacy_sessions()  # migrated compare sessions have no review still to come
     pipeline.recover_writers()  # a writer queued before a restart still runs
     pipeline.sweep_note_deadlines()  # a restart during the note wait can't leave a review stuck
     selection = db.one("SELECT value FROM app_settings WHERE key='ollama_model'")
@@ -93,11 +94,6 @@ def get_attempt(attempt_id: str) -> dict:
     return result
 
 
-def require_first(session_id: str):
-    if not db.one("SELECT id FROM attempts WHERE session_id=? AND number=1", (session_id,)):
-        raise HTTPException(409, "Save your cold attempt before revealing reference material.")
-
-
 def archive(conn, attempt: dict):
     """Keep the public attempt and its review message before they are replaced."""
     snapshot = db.attempt_public(attempt)
@@ -113,8 +109,6 @@ def archive(conn, attempt: dict):
 
 
 def require_editable(attempt: dict):
-    if get_session(attempt["session_id"])["completed_at"]:
-        raise HTTPException(409, "Completed sessions are preserved. Start a new practice session.")
     if attempt["status"] in {"pending", "processing"}:
         raise HTTPException(409, "Analysis is already running. Wait for it to finish.")
 
@@ -181,183 +175,201 @@ def topics():
     return [public_topic(t) for t in TOPICS]
 
 
+def _concept_weakness() -> dict[str, float]:
+    """Per practised topic, 1 - mastery of the thread's latest attempt that has concept results
+    (the new technical pass, else a legacy assessment)."""
+    weak = {}
+    for thread in threads.all_threads():
+        for attempt in reversed(threads.attempts(thread["id"])):
+            score = progress.mastery(progress.concept_results(attempt))
+            if score is not None:
+                weak[thread["topic_id"]] = 1 - score
+                break
+    return weak
+
+
 @app.get("/api/topics/recommend")
-def recommendation(category: str | None = None, difficulty: str | None = None, exclude: str | None = None):
-    candidates = [
+def recommendation(
+    category: str | None = None,
+    difficulty: str | None = None,
+    exclude: str | None = None,
+    include_practised: bool = False,
+):
+    practised = {t["topic_id"] for t in threads.all_threads()}
+    pool = [
         t
         for t in TOPICS
         if (not category or t["category"] == category)
         and (not difficulty or t["difficulty"] == difficulty)
-        and t["id"] != exclude
+        and (include_practised or t["id"] not in practised)
     ]
-    if not candidates:
-        candidates = [
-            t
-            for t in TOPICS
-            if (not category or t["category"] == category)
-            and (not difficulty or t["difficulty"] == difficulty)
-        ]
-    if not candidates:
-        raise HTTPException(404, "No topics match those filters. Try a broader selection.")
+    if not pool:
+        raise HTTPException(
+            404,
+            "No topics match those filters. Try a broader selection."
+            if include_practised
+            else "You have practised every topic that matches. Include practised topics to see them.",
+        )
+    candidates = [t for t in pool if t["id"] != exclude] or pool
     reviews = {r["topic_id"]: r for r in db.all_rows("SELECT * FROM reviews")}
-    weak = {}
-    for row in db.all_rows(
-        "SELECT s.topic_id, a.assessment, a.analysis FROM sessions s JOIN attempts a ON a.session_id=s.id AND a.number=2 WHERE s.completed_at IS NOT NULL ORDER BY s.created_at"
-    ):
-        score = progress.mastery(progress.concept_results(row))
-        if score is not None:
-            weak[row["topic_id"]] = 1 - score
+    weak = _concept_weakness()
     selected = recommend(candidates, reviews, weak)
     review = reviews.get(selected["id"])
     return {
         "topic": public_topic(selected),
+        "practised": selected["id"] in practised,
         "reason": "Due for a memory check"
-        if review and review["due"] <= date.today().isoformat()
+        if review and review["due"] <= threads.today().isoformat()
         else "Room to deepen your understanding"
         if weak.get(selected["id"], 0) > 0.3
         else "A fresh perspective for your next practice",
     }
 
 
-@app.post("/api/sessions", status_code=201)
-def create_session(body: SessionCreate):
-    if body.topic_id not in CATALOG:
-        raise HTTPException(404, "Topic not found.")
-    session_id = str(uuid.uuid4())
-    db.execute(
-        "INSERT INTO sessions(id,topic_id,created_at,duration,style,prompt_kind) VALUES(?,?,?,?,?,?)",
-        (session_id, body.topic_id, db.now(), body.duration, body.style, body.prompt_kind),
-    )
-    return session_detail(session_id)
+def _thread_summary(thread: dict) -> dict:
+    """The fields History and Today share for one topic thread."""
+    attempts = threads.attempts(thread["id"])
+    latest = attempts[-1]
+    topic = topic_for(thread["topic_id"])
+    return {
+        "topic_id": thread["topic_id"],
+        "topic": public_topic(topic),
+        "session_id": thread["id"],
+        "attempt_count": len(attempts),
+        "last_attempt_at": latest["created_at"],
+        "next_attempt_after": threads.next_attempt_after(thread["id"]),
+        "can_record": threads.recording_state(thread["topic_id"])["can_record"],
+        "_latest": latest,
+    }
 
 
-@app.get("/api/sessions")
+def _coverage(attempt: dict, topic_id: str) -> dict:
+    results = progress.concept_results(attempt)
+    metrics = json.loads(attempt["acoustics"]) if attempt["acoustics"] else {}
+    return {
+        "attempt": attempt["number"],
+        "correct": sum(c["status"] == "correct" for c in results["concepts"]) if results else None,
+        "total": len(topic_for(topic_id)["concepts"]),
+        "wpm": metrics.get("wpm"),
+        "pitch_range_semitones": metrics.get("pitch_range_semitones"),
+        "filler_count": metrics.get("filler_count"),
+    }
+
+
+@app.get("/api/history")
 def history():
-    rows = db.all_rows("SELECT * FROM sessions ORDER BY created_at DESC LIMIT 200")
-    for row in rows:
-        row["topic"] = public_topic(topic_for(row["topic_id"]))
-        attempts = db.all_rows(
-            "SELECT number, assessment, analysis, acoustics FROM attempts WHERE session_id=? ORDER BY number",
-            (row["id"],),
+    """One row per topic with at least one recording, most recently practised first."""
+    rows = []
+    for thread in threads.all_threads():
+        row = _thread_summary(thread)
+        row["coverage"] = _coverage(row.pop("_latest"), thread["topic_id"])
+        rows.append(row)
+    return sorted(rows, key=lambda r: r["last_attempt_at"], reverse=True)
+
+
+@app.get("/api/practice/ready")
+def practice_ready():
+    """Practised topics where a new attempt is open: spaced reviews that are due first, then the
+    oldest last attempt."""
+    today = threads.today().isoformat()
+    reviews = {r["topic_id"]: r for r in db.all_rows("SELECT * FROM reviews")}
+    rows = []
+    for thread in threads.all_threads():
+        row = _thread_summary(thread)
+        row.pop("_latest")
+        if not row["can_record"]:
+            continue
+        review = reviews.get(thread["topic_id"])
+        row["review_due"] = review["due"] if review else None
+        row["due"] = bool(review and review["due"] <= today)
+        rows.append(row)
+    return sorted(rows, key=lambda r: (not r["due"], r["last_attempt_at"]))
+
+
+def _attempt_view(attempt: dict, session: dict) -> dict:
+    """The public attempt with the question type, style and target length it was recorded with."""
+    chosen = threads.attempt_settings(attempt, session)
+    result = {**db.attempt_public(attempt), **chosen}
+    result["prompt"] = prompt(topic_for(session["topic_id"]), chosen["prompt_kind"])
+    return result
+
+
+@app.get("/api/topics/{topic_id}/thread")
+def topic_thread(topic_id: str):
+    thread = threads.thread_for_topic(topic_id)
+    if not thread and topic_id not in CATALOG:
+        raise HTTPException(404, "Topic not found.")
+    pipeline.sweep_note_deadlines()
+    topic = topic_for(topic_id)
+    result = {
+        "topic": public_topic(topic),
+        # The question for each type, for the recording screen's "Try a different angle".
+        "prompts": {kind: prompt(topic, kind) for kind in get_args(PromptKind)},
+        "session_id": None,
+        "attempts": [],
+        "messages": [],
+        "recording": threads.recording_state(topic_id),
+        "latest_checklist": [],
+        "next_attempt_after": None,
+    }
+    if thread:
+        attempts = [_attempt_view(a, thread) for a in threads.attempts(thread["id"])]
+        lines = {a["number"]: a["lines"] or [] for a in attempts}
+        result.update(
+            session_id=thread["id"],
+            attempts=attempts,
+            messages=[
+                {**m, "parts": markers.resolve(m["content"], lines.get(m["attempt_number"], []))}
+                for m in feedback.messages_for_session(thread["id"])
+            ],
+            latest_checklist=threads.latest_checklist(thread["id"]),
+            next_attempt_after=threads.next_attempt_after(thread["id"]),
         )
-        row["attempt_count"] = len(attempts)
-        row["coverage"] = []
-        for attempt in attempts:
-            a = progress.concept_results(attempt)
-            m = json.loads(attempt["acoustics"]) if attempt["acoustics"] else {}
-            row["coverage"].append(
-                {
-                    "attempt": attempt["number"],
-                    "correct": sum(c["status"] == "correct" for c in a["concepts"]) if a else None,
-                    "total": len(topic_for(row["topic_id"])["concepts"]),
-                    "wpm": m.get("wpm"),
-                    "pitch_range_semitones": m.get("pitch_range_semitones"),
-                    "filler_count": m.get("filler_count"),
-                }
-            )
-    return rows
-
-
-@app.get("/api/reviews")
-def reviews():
-    # A topic with a second attempt still to do shows in the attempt 2 queue instead.
-    rows = db.all_rows(
-        "SELECT * FROM reviews WHERE topic_id NOT IN ("
-        "SELECT topic_id FROM sessions WHERE stage IN ('review1','record2') AND completed_at IS NULL"
-        ") ORDER BY due"
-    )
-    return [
-        {**r, "topic": public_topic(topic_for(r["topic_id"])), "overdue": r["due"] <= date.today().isoformat()}
-        for r in rows
-    ]
-
-
-@app.get("/api/attempt2")
-def attempt2_queue():
-    """Second attempts still to do. They never expire; each opens the day after attempt 1."""
-    today = date.today().isoformat()
-    rows = db.all_rows(
-        "SELECT * FROM sessions WHERE stage IN ('review1','record2') AND completed_at IS NULL "
-        "ORDER BY attempt2_after, created_at"
-    )
-    return [
-        {
-            "session_id": r["id"],
-            "topic": public_topic(topic_for(r["topic_id"])),
-            "attempt2_after": r["attempt2_after"],
-            "available": not r["attempt2_after"] or r["attempt2_after"] <= today,
-        }
-        for r in rows
-    ]
+    return result
 
 
 @app.get("/api/sessions/{session_id}")
 def session_detail(session_id: str):
+    """A session as stored. Kept so old #/session links can find their topic (topic_id)."""
     session = get_session(session_id)
     pipeline.sweep_note_deadlines()
     topic = topic_for(session["topic_id"])
     session["topic"] = public_topic(topic)
     session["prompt"] = prompt(topic, session["prompt_kind"])
     session["attempts"] = [
-        db.attempt_public(a)
+        _attempt_view(a, session)
         for a in db.all_rows("SELECT * FROM attempts WHERE session_id=? ORDER BY number", (session_id,))
     ]
     lines = {a["number"]: a["lines"] or [] for a in session["attempts"]}
     session["messages"] = [
         {**m, "parts": markers.resolve(m["content"], lines.get(m["attempt_number"], []))}
-        for m in db.all_rows("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,))
+        for m in feedback.messages_for_session(session_id)
     ]
     return session
 
 
-def _attempt1_too_short(session_id: str) -> bool:
-    """A too-short attempt 1 got no feedback, so it may be recorded again."""
-    row = db.one("SELECT analysis FROM attempts WHERE session_id=? AND number=1", (session_id,))
-    analysis = json.loads(row["analysis"]) if row and row["analysis"] else {}
-    return bool((analysis.get("review") or {}).get("too_short"))
+def _refuse_unless_open(state: dict):
+    if not state["can_record"]:
+        raise HTTPException(409, state["reason"])
 
 
-@app.put("/api/sessions/{session_id}/stage")
-def stage(session_id: str, body: StageChange):
-    with mutation_lock:
-        session = get_session(session_id)
-        if session["completed_at"]:
-            raise HTTPException(409, "This session is complete.")
-        if body.stage != "record1":
-            require_first(session_id)
-        if body.stage == "record1" and session["stage"] != "record1" and not (
-            session["stage"] == "review1" and _attempt1_too_short(session_id)
-        ):
-            raise HTTPException(409, "The cold attempt is preserved after feedback is revealed.")
-        if (
-            body.stage == "record2"
-            and session["stage"] != "record2"
-            and db.one("SELECT id FROM attempts WHERE session_id=? AND number=2", (session_id,))
-        ):
-            raise HTTPException(409, "Attempt 2 is preserved after it is saved.")
-        if (
-            body.stage == "record2"
-            and session["attempt2_after"]
-            and date.today().isoformat() < session["attempt2_after"]
-        ):
-            raise HTTPException(409, "Attempt 2 opens tomorrow so it tests what you remember.")
-        if body.stage == "review2" and not db.one(
-            "SELECT id FROM attempts WHERE session_id=? AND number=2", (session_id,)
-        ):
-            raise HTTPException(409, "Save your second attempt first.")
-        db.execute("UPDATE sessions SET stage=? WHERE id=?", (body.stage, session_id))
-    return session_detail(session_id)
-
-
-@app.post("/api/sessions/{session_id}/attempts/{number}", status_code=201)
-async def upload(session_id: str, number: int, file: UploadFile = File(...)):
-    if number not in (1, 2):
-        raise HTTPException(422, "Attempt number must be 1 or 2.")
-    session = get_session(session_id)
-    if session["completed_at"] or session["stage"] != f"record{number}":
-        raise HTTPException(409, "Open the appropriate recording step before saving an attempt.")
-    if number == 2:
-        require_first(session_id)
+@app.post("/api/topics/{topic_id}/attempts", status_code=201)
+async def upload(
+    topic_id: str,
+    file: UploadFile = File(...),
+    prompt_kind: str | None = Form(None),
+    style: str | None = Form(None),
+    duration: int | None = Form(None),
+):
+    """Record the next attempt on the topic's thread, creating the thread with attempt 1, or
+    replace a too-short latest attempt. Omitted settings carry over from the latest attempt."""
+    if topic_id not in CATALOG:
+        raise HTTPException(404, "Topic not found.")
+    try:
+        chosen = AttemptSettings(prompt_kind=prompt_kind, style=style, duration=duration)
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_url=False, include_context=False)) from exc
+    _refuse_unless_open(threads.recording_state(topic_id))  # before reading the audio
     identifier = str(uuid.uuid4())
     folder = settings.data_dir / "recordings"
     source = folder / (identifier + ".upload")
@@ -381,17 +393,44 @@ async def upload(session_id: str, number: int, file: UploadFile = File(...)):
                     raise HTTPException(413, "Audio must be smaller than 30 MB.")
                 out.write(chunk)
         try:
-            duration = await run_in_threadpool(decode, source, wav)
+            seconds = await run_in_threadpool(decode, source, wav)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         with mutation_lock:
-            session = get_session(session_id)
-            if session["completed_at"] or session["stage"] != f"record{number}":
-                raise HTTPException(409, "The session changed while audio was being uploaded.")
-            old = db.one("SELECT * FROM attempts WHERE session_id=? AND number=?", (session_id, number))
-            if old:
-                require_editable(old)
+            # Checked again: the thread may have changed while the audio was uploading.
+            state = threads.recording_state(topic_id)
+            _refuse_unless_open(state)
+            thread = threads.thread_for_topic(topic_id)
+            latest = threads.attempts(thread["id"])[-1] if thread else None
+            inherited = threads.attempt_settings(latest, thread) if latest else {}
+            values = {
+                "prompt_kind": chosen.prompt_kind or inherited.get("prompt_kind") or "Concept explanation",
+                "style": chosen.style or inherited.get("style") or "Conversational",
+                "target_duration": chosen.duration or inherited.get("target_duration") or 120,
+            }
+            number = state["next_number"]
+            old = (
+                db.one("SELECT * FROM attempts WHERE session_id=? AND number=?", (thread["id"], number))
+                if thread and state["replace_number"]
+                else None
+            )
             with db.connect() as conn:
+                if thread:
+                    session_id = thread["id"]
+                else:
+                    # The thread is created only now, with its first recording.
+                    session_id = str(uuid.uuid4())
+                    conn.execute(
+                        "INSERT INTO sessions(id,topic_id,created_at,duration,style,prompt_kind) VALUES(?,?,?,?,?,?)",
+                        (
+                            session_id,
+                            topic_id,
+                            db.now(),
+                            values["target_duration"],
+                            values["style"],
+                            values["prompt_kind"],
+                        ),
+                    )
                 if old:
                     conn.execute("DELETE FROM attempts WHERE id=?", (old["id"],))
                     # Messages hang off the session, so the replaced attempt's review and chat go
@@ -400,22 +439,29 @@ async def upload(session_id: str, number: int, file: UploadFile = File(...)):
                         "DELETE FROM messages WHERE session_id=? AND attempt_number=?", (session_id, number)
                     )
                 conn.execute(
-                    "INSERT INTO attempts(id,session_id,number,created_at,audio_file,wav_file,mime,duration) VALUES(?,?,?,?,?,?,?,?)",
-                    (identifier, session_id, number, db.now(), str(source), str(wav), mime, duration),
+                    "INSERT INTO attempts(id,session_id,number,created_at,audio_file,wav_file,mime,duration,"
+                    "prompt_kind,style,target_duration) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        identifier,
+                        session_id,
+                        number,
+                        db.now(),
+                        str(source),
+                        str(wav),
+                        mime,
+                        seconds,
+                        values["prompt_kind"],
+                        values["style"],
+                        values["target_duration"],
+                    ),
                 )
-                if number == 1:
-                    conn.execute(
-                        "UPDATE sessions SET stage='review1', attempt2_after=? WHERE id=?",
-                        ((date.today() + timedelta(days=1)).isoformat(), session_id),
-                    )
-                else:
-                    conn.execute("UPDATE sessions SET stage='review2' WHERE id=?", (session_id,))
             kept = True
             if old:
                 Path(old["audio_file"]).unlink(missing_ok=True)
                 Path(old["wav_file"]).unlink(missing_ok=True)
             pipeline.submit(identifier)
-        return db.attempt_public(get_attempt(identifier))
+        attempt = get_attempt(identifier)
+        return _attempt_view(attempt, get_session(attempt["session_id"]))
     finally:
         await file.close()
         if not kept:
@@ -450,8 +496,7 @@ def learner_note(attempt_id: str, body: LearnerNote):
     text = (body.text or "").strip()
     if not body.skip and not text:
         raise HTTPException(422, "Write how it went, or skip.")
-    if get_session(get_attempt(attempt_id)["session_id"])["completed_at"]:
-        raise HTTPException(409, "Completed sessions are preserved. Start a new practice session.")
+    get_attempt(attempt_id)
     if not pipeline.submit_note(attempt_id, None if body.skip else text, body.skip):
         raise HTTPException(409, "Your note for this attempt was already sent or skipped.")
     return db.attempt_public(get_attempt(attempt_id))
@@ -478,13 +523,21 @@ def edit_transcript(attempt_id: str, body: TranscriptEdit):
 @app.post("/api/attempts/{attempt_id}/rereview")
 def rereview(attempt_id: str):
     """Run the current pipeline again on a saved attempt, legacy ones included. The earlier
-    snapshot and review message are archived; the recording, transcript and schedule are kept."""
-    with mutation_lock:
+    snapshot and review message are archived; the recording, transcript and schedule are kept:
+    an attempt that already had a review doesn't reschedule the spaced review again."""
+    with mutation_lock, coach_reply_guard():
         attempt = get_attempt(attempt_id)
         if attempt["status"] in {"pending", "processing"}:
             raise HTTPException(409, "The coach is still reviewing this attempt. Wait for it to finish.")
+        # A too-short attempt has a review with no scores: it never scheduled, so it still may.
+        review = (json.loads(attempt["analysis"]) if attempt["analysis"] else {}).get("review") or {}
+        reviewed = bool(attempt["assessment"]) or bool(review.get("scores"))
         with db.connect() as conn:
             archive(conn, attempt)
+            if reviewed:
+                conn.execute(
+                    "UPDATE attempts SET scheduled_at=COALESCE(scheduled_at,?) WHERE id=?", (db.now(), attempt_id)
+                )
             conn.execute(
                 "DELETE FROM messages WHERE session_id=? AND attempt_number=? AND kind='review'",
                 (attempt["session_id"], attempt["number"]),
@@ -498,15 +551,42 @@ def rereview(attempt_id: str):
     return {"status": "pending"}
 
 
+@contextmanager
+def coach_reply_guard():
+    if not tutor_lock.acquire(blocking=False):
+        raise HTTPException(409, "Wait for the coach to finish answering before regenerating the review.")
+    try:
+        yield
+    finally:
+        tutor_lock.release()
+
+
 @app.get("/api/attempts/{attempt_id}/analysis-history")
 def analysis_history(attempt_id: str):
     get_attempt(attempt_id)
-    return [
-        {"id": row["id"], "created_at": row["created_at"], "attempt": json.loads(row["snapshot"])}
-        for row in db.all_rows(
-            "SELECT * FROM analysis_history WHERE attempt_id=? ORDER BY id DESC", (attempt_id,)
-        )
-    ]
+    result = []
+    for row in db.all_rows("SELECT * FROM analysis_history WHERE attempt_id=? ORDER BY id DESC", (attempt_id,)):
+        snapshot = json.loads(row["snapshot"])
+        snapshot["review_parts"] = markers.resolve(snapshot.get("review_message") or "", snapshot.get("lines") or [])
+        result.append({"id": row["id"], "created_at": row["created_at"], "attempt": snapshot})
+    return result
+
+
+@app.put("/api/messages/{message_id}/feedback")
+def rate_response(message_id: int, body: ResponseFeedback):
+    try:
+        return {"feedback": feedback.save(message_id, body.model_dump())}
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/feedback/export")
+def export_feedback():
+    return JSONResponse(feedback.export(), headers={
+        "Content-Disposition": 'attachment; filename="speaklab-feedback.json"',
+    })
 
 
 @app.post("/api/sessions/{session_id}/chat")
@@ -514,21 +594,18 @@ def coach_chat(session_id: str, body: ChatInput):
     message = body.message.strip()
     if not message:
         raise HTTPException(422, "Write a message for the coach.")
-    get_session(session_id)
-    attempt = db.one(
-        "SELECT * FROM attempts WHERE session_id=? AND number=?", (session_id, body.attempt_number)
-    )
-    if not attempt:
-        raise HTTPException(
-            409,
-            "Record attempt 2 before chatting about it."
-            if body.attempt_number == 2
-            else "Record your first attempt before chatting with the coach.",
+    # Atomically check the attempt and reserve the model, against model changes/regeneration.
+    with mutation_lock:
+        get_session(session_id)
+        attempt = db.one(
+            "SELECT * FROM attempts WHERE session_id=? AND number=?", (session_id, body.attempt_number)
         )
-    if chat.still_reviewing(attempt):
-        raise HTTPException(409, chat.REVIEWING)
-    if not tutor_lock.acquire(blocking=False):
-        raise HTTPException(409, "The coach is already answering. Try again shortly.")
+        if not attempt:
+            raise HTTPException(409, f"Record attempt {body.attempt_number} before chatting about it.")
+        if chat.still_reviewing(attempt):
+            raise HTTPException(409, chat.REVIEWING)
+        if not tutor_lock.acquire(blocking=False):
+            raise HTTPException(409, "The coach is already answering. Try again shortly.")
     released = Lock()
 
     def release():

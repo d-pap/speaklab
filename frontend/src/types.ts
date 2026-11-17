@@ -1,4 +1,3 @@
-export type Stage = "record1" | "review1" | "record2" | "review2";
 export type ConceptStatus = "correct" | "partial" | "missing" | "incorrect";
 export interface Topic {
   id: string;
@@ -125,6 +124,12 @@ export interface Attempt {
   analysis?: Analysis | null;
   learner_note?: string | null;
   note_state?: NoteState | null;
+  /** The question type, style and target length this attempt was recorded with. */
+  prompt_kind: string;
+  style: string;
+  target_duration: number;
+  /** The question text for this attempt's question type ("" for a retired topic). */
+  prompt: string;
 }
 export type NoteState = "pending" | "submitted" | "skipped" | "legacy";
 export interface Line {
@@ -235,6 +240,15 @@ export interface Message {
   kind: "review" | "chat";
   parts: MessagePart[];
   model?: string | null;
+  feedback?: ResponseFeedback | null;
+}
+export interface ResponseFeedback {
+  id: number;
+  rating: 1 | -1;
+  reason: string | null;
+  comment: string;
+  preferred_response: string;
+  updated_at: string;
 }
 export interface PassSetting {
   model: string;
@@ -257,54 +271,55 @@ export interface CoachNotes {
   current: { id: number | null; content: string; model: string | null };
   versions: CoachNotesVersion[];
 }
-export interface Attempt2Item {
-  session_id: string;
-  topic: Topic;
-  attempt2_after: string | null;
-  available: boolean;
+export interface RecordingState {
+  can_record: boolean;
+  reason: string | null;
+  /** Set when the latest attempt was too short: the next recording replaces it. */
+  replace_number: number | null;
+  next_number: number;
 }
-export interface Session {
-  id: string;
-  topic_id: string;
+/** One topic's practice thread (GET /api/topics/{id}/thread). */
+export interface Thread {
   topic: Topic;
-  created_at: string;
-  duration: number;
-  style: string;
-  prompt_kind: string;
-  prompt: string;
-  stage: Stage;
-  completed_at: string | null;
-  attempt2_after?: string | null;
-  recall: string | null;
-  review_due: string | null;
+  /** The question for each offered question type. */
+  prompts: Record<string, string>;
+  session_id: string | null;
   attempts: Attempt[];
   messages: Message[];
+  recording: RecordingState;
+  latest_checklist: string[];
+  next_attempt_after: string | null;
 }
-export interface HistoryItem {
-  id: string;
-  topic: Topic;
-  created_at: string;
-  completed_at: string | null;
-  review_due: string | null;
-  attempt_count: number;
-  stage: Stage;
-  attempt2_after?: string | null;
-  coverage: {
-    attempt: number;
-    correct: number | null;
-    total: number;
-    wpm: number | null;
-    pitch_range_semitones: number | null;
-    filler_count: number | null;
-  }[];
+export interface Coverage {
+  attempt: number;
+  correct: number | null;
+  total: number;
+  wpm: number | null;
+  pitch_range_semitones: number | null;
+  filler_count: number | null;
 }
-export interface Review {
+interface ThreadSummary {
   topic_id: string;
   topic: Topic;
-  due: string;
-  interval_days: number;
-  repetitions: number;
-  overdue: boolean;
+  session_id: string;
+  attempt_count: number;
+  last_attempt_at: string;
+  next_attempt_after: string | null;
+  can_record: boolean;
+}
+/** A History row (GET /api/history): one per topic with a recording. */
+export interface HistoryRow extends ThreadSummary {
+  coverage: Coverage;
+}
+/** A practised topic with a new attempt open (GET /api/practice/ready). */
+export interface ReadyRow extends ThreadSummary {
+  review_due: string | null;
+  due: boolean;
+}
+export interface Recommendation {
+  topic: Topic;
+  practised: boolean;
+  reason: string;
 }
 export interface Health {
   status: string;

@@ -250,9 +250,9 @@ def test_fold_discarded_when_notes_edited_during_the_model_call(notes_db):
 
 
 def test_fold_discarded_pass_is_recorded_as_failed_memory_pass(client, wav_bytes, fake_llm):
-    from conftest import create, upload
+    from conftest import upload
 
-    first = upload(client, create(client), wav_bytes)
+    first = upload(client, wav_bytes)
     client.post(f"/api/attempts/{first['id']}/note", json={"skip": True})
 
     def edit_midway(record):
@@ -260,7 +260,7 @@ def test_fold_discarded_pass_is_recorded_as_failed_memory_pass(client, wav_bytes
         return "## Focus: structure\nSince the first session."
 
     fake_llm.queue("memory", edit_midway)
-    second = upload(client, create(client), wav_bytes)
+    second = upload(client, wav_bytes, "caching")
     entry = second["analysis"]["passes"]["memory"]
     assert entry["status"] == "failed" and "changed while" in entry["error"]
     assert memory.current_notes()["content"] == "## Focus: pacing\nEdited during the update."
