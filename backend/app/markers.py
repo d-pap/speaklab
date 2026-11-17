@@ -5,6 +5,7 @@ model-written."""
 import re
 
 MARKER = re.compile(r'\[\[(L\d+)(?::"([^"]+)")?\]\]')
+_RANGE_MARKER = re.compile(r"\[\[(L\d+)\s*[-–]\s*(L\d+)\]\]")
 plain_timestamp_pattern = re.compile(r"\b\d{1,2}:\d{2}\b")
 
 
@@ -43,6 +44,7 @@ def _quote_from_line(quote: str, line_text: str) -> str:
 
 def resolve(text: str, lines: list[dict]) -> list[dict]:
     by_id = {line["id"]: line for line in lines}
+    text = _expand_ranges(text, by_id)
     parts: list[dict] = []
 
     def add_text(chunk: str) -> None:
@@ -68,6 +70,13 @@ def resolve(text: str, lines: list[dict]) -> list[dict]:
     return parts
 
 
+def _expand_ranges(text: str, known) -> str:
+    def endpoints(match):
+        return "–".join(f"[[{line_id}]]" for line_id in dict.fromkeys(match.groups()) if line_id in known)
+    return _RANGE_MARKER.sub(endpoints, text)
+
+
 def strip_unknown(text: str, lines: list[dict]) -> str:
     known = {line["id"] for line in lines}
+    text = _expand_ranges(text, known)
     return MARKER.sub(lambda m: m.group(0) if m.group(1) in known else "", text)

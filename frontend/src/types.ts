@@ -202,6 +202,7 @@ export interface Score {
   reason: string;
 }
 export interface ReviewStructure {
+  accuracy_unscored?: string;
   scores: Score[];
   key_points: { text: string; line_ids: string[] }[];
   checklist: string[];
@@ -281,6 +282,10 @@ export interface RecordingState {
 /** One topic's practice thread (GET /api/topics/{id}/thread). */
 export interface Thread {
   topic: Topic;
+  study_reference?: {
+    example: string;
+    sources: { title: string; url: string }[];
+  } | null;
   /** The question for each offered question type. */
   prompts: Record<string, string>;
   session_id: string | null;

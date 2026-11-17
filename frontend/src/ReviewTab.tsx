@@ -248,6 +248,9 @@ export function ReviewTab({
           <strong>{shown.name}:</strong> {shown.reason}
         </p>
       )}
+      {review.accuracy_unscored && (
+        <p className="small">{review.accuracy_unscored}</p>
+      )}
       <p className="small muted">Coaching estimates, not measurements.</p>
       {review.comparison && (
         <div className="score-changes">

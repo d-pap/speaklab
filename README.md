@@ -118,6 +118,8 @@ Use the thumbs below a written review or learning-chat reply to mark it helpful 
 
 The **Coach model** picker above the conversation selects an installed local model for new reviews and replies across SpeakLab. Choose a model, then click **Regenerate review** to rerun the complete review for the saved attempt. Existing chat, ratings, recordings and review dates are preserved. **View previous reviews** opens the archived written feedback and its model; each current coach response also identifies the model that produced it. Custom per-step models remain in Settings and are left intact until you explicitly choose a common model. Finish an active review or reply before switching models or regenerating.
 
+After a review, **Learn the concept** opens a lesson on the attempt with a worked example and a new case to explain. **Rehearse my delivery** gives two ways to speak the same idea and a cue to listen for. **Record and listen to a rehearsal** keeps a one-minute clip in the browser until you close the recorder or leave the attempt. You can download the clip. The next scored attempt still opens on its usual schedule. **Worked example and sources** opens the catalog reference for the recorded topic.
+
 Feedback stays in the local database, with the original response and its available generation context preserved through transcript edits and re-reviews. **Settings → Coaching feedback → Export feedback** downloads these records. Votes collect evidence for improvement; they do not automatically train or switch models. Private reference conversations can also supply examples of useful observations and teaching, after checking their completeness and separating training from evaluation. See [Improving local coaching](docs/coaching-feedback.md).
 
 ## What works

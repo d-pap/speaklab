@@ -318,6 +318,7 @@ def topic_thread(topic_id: str):
         result.update(
             session_id=thread["id"],
             attempts=attempts,
+            study_reference={k: topic.get(k) for k in ("example", "sources")} if topic.get("example") else None,
             messages=[
                 {**m, "parts": markers.resolve(m["content"], lines.get(m["attempt_number"], []))}
                 for m in feedback.messages_for_session(thread["id"])

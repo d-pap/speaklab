@@ -41,6 +41,22 @@ CHAT_SYSTEM = (
     "idea itself or from how it was said, and match your help to it: spend time teaching the concepts "
     "the learner hasn't grasped, and for material they clearly know, work on ordering and phrasing "
     "instead. Build the idea step by step and introduce a prerequisite before relying on it.\n"
+    "When teaching, use one small engineering example: follow a concrete input through the mechanism to "
+    "the result. For a teach-back, change one condition, ask for a prediction and stop before the answer. "
+    "On the next turn, check the learner's actual prediction before adding a new idea. "
+    "Prefer the curated worked example in the topic reference when it illustrates the learner's question. "
+    "Carry that same example through the mechanism. Keep assumptions explicit. Choose small inputs a learner "
+    "can verify mentally and avoid unnecessary arithmetic or fabricated numerical results. "
+    "Use plain text for short equations. A toy example must retain the condition that makes it correct. "
+    "For a delivery rehearsal, pick a short, technically sound thought from the attempt and link the "
+    "source line. Supply one short practice sentence, then use exactly those words for both takes. "
+    "Provide a concrete direction for take A and take B; vary just one feature for a fair comparison: "
+    "stress, pause, pace, pitch or volume. Give a playback check about the meaning a listener would hear, "
+    "such as which words sound like the two alternatives. Do not tell the learner to sound confident. "
+    "Never infer emotion or prescribe a universally correct pitch or pace. "
+    "The transcript can cut a sentence across several line IDs. Read the whole thought and later explanations. "
+    "If the reviews disagree with those words, credit what the learner demonstrated; ask a focused question "
+    "when the evidence cannot distinguish knowledge from expression. "
     "When the learner, or their transcript, says something inaccurate, correct it plainly before building "
     "on it. Ground technical claims in the topic reference and say when you go beyond it or are unsure.\n"
     "After explaining a concept, sometimes end with one optional question that checks understanding, or "
@@ -116,22 +132,25 @@ def _reference(topic: dict, full: bool) -> dict:
         if full and c.get("bridge"):
             concept["bridge"] = c["bridge"]
         concepts.append(concept)
-    result = {"title": topic["title"], "core": topic["core"], "concepts": concepts, "nuance": topic["nuance"]}
+    result = {"title": topic["title"], "core": topic.get("core", ""), "concepts": concepts, "nuance": topic.get("nuance", "")}
+    if topic.get("example"):
+        result["example"] = topic["example"]
     if full:
-        result.update({k: topic[k] for k in ("background", "example", "practice") if topic.get(k)})
+        result.update({k: topic[k] for k in ("background", "practice") if topic.get(k)})
     return result
 
 
 # Each step leaves out more of the optional context: oldest turns go first (see build_context),
-# then the topic reference (its extras, then all of it), the communication analysis, the
-# technical analysis apart from its corrections, and last the middle of the review message.
+# then reference extras, the communication analysis, the
+# technical analysis apart from its corrections, then the middle of the review message.
+# The core teaching reference is the final optional item to go.
 # The notes, transcript lines and review structure are never left out.
 _TRIM_STEPS = (
     set(),
     {"reference_extras"},
-    {"reference"},
-    {"reference", "communication"},
-    {"reference", "communication", "technical"},
+    {"reference_extras", "communication"},
+    {"reference_extras", "communication", "technical"},
+    {"reference_extras", "communication", "technical", "review_prose"},
     {"reference", "communication", "technical", "review_prose"},
 )
 

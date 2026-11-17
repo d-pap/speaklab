@@ -240,6 +240,7 @@ def _analyse(attempt: dict, session: dict, metrics: dict | None, text: str, segm
             memory.current_notes()["content"],
             {"prompt": question, "duration": attempt["duration"]},
         )
+        analysis["communication"] = coach.check_coaching_findings(analysis["communication"], topic, question, lines)
         analysis["timing"] = coach.section_timing(
             analysis["communication"]["sections"], lines, attempt["duration"]
         )
@@ -421,6 +422,9 @@ def write(attempt_id: str):
     try:
         lines = json.loads(attempt["lines"])
         notes = memory.current_notes()["content"]
+        session = db.one("SELECT * FROM sessions WHERE id=?", (attempt["session_id"],))
+        topic = topic_for(session["topic_id"])
+        question = prompt(topic, threads.attempt_settings(attempt, session)["prompt_kind"])
         previous_review, question_change = _previous_attempt(attempt)
         if not analysis["review"]:
             analysis["review"], writer["model"] = coach.review_structure_pass(
@@ -430,7 +434,7 @@ def write(attempt_id: str):
                 notes,
                 attempt["learner_note"],
                 previous_review,
-                question_change,
+                question_change, question=question, lines=lines, topic_core=topic.get("core", ""),
             )
             _save(attempt_id, analysis)  # the structure survives a failed message
         with llm.capture_text_calls() as calls:
@@ -442,9 +446,9 @@ def write(attempt_id: str):
                 analysis["review"],
                 notes,
                 attempt["learner_note"],
-                question_change,
+                question_change, question=question, topic_core=topic.get("core", ""),
+                worked_example=topic.get("example", ""), voice_summary=analysis.get("voice_summary"),
             )
-        session = db.one("SELECT * FROM sessions WHERE id=?", (attempt["session_id"],))
         context = feedback.generation_context({**attempt, "analysis": json.dumps(analysis)}, session, calls)
         warning = coach.call_state.warning  # thread-local: read in the thread that ran the pass
         with db.connect() as conn:

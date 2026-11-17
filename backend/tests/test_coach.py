@@ -720,3 +720,65 @@ def test_writer_prompts_act_on_question_change():
     for system in (coach.STRUCTURE_SYSTEM, coach.MESSAGE_SYSTEM):
         assert "question_change" in system
         assert "indicative" in system
+
+
+def test_knowledge_check_uses_full_answer_and_removes_contradicted_feedback(fake_llm):
+    communication = communication_reply()
+    fake_llm.queue("technical", {
+        "verdicts": [{"gap_id": "G0", "kind": "communication", "reason": "The example clarifies the mechanism.",
+                      "evidence": ["L4"]}],
+        "withdraw_points": [1],
+    })
+    checked = coach.check_coaching_findings(communication, TOPIC, TOPIC["prompt"], LINES)
+    assert checked["gaps"][0]["kind"] == "communication"
+    assert checked["gaps"][0]["line_ids"] == ["L4"]
+    assert checked["points"] == communication["points"][:1]
+    assert checked["gap_check"]["model"]
+    call = fake_llm.requests_for("technical")[0]["payload"]
+    assert list(call["transcript_lines"]) == [line["id"] for line in LINES]
+    assert call["references"]["collisions"] == coach.references(TOPIC)["collisions"]
+
+
+def test_knowledge_check_degrades_to_question_if_verdict_cannot_be_validated(fake_llm):
+    bad = {"verdicts": [{"gap_id": "G0", "kind": "knowledge", "reason": "Overwrites.", "evidence": ["L999"]}],
+           "withdraw_points": []}
+    fake_llm.queue("technical", bad, bad)
+    checked = coach.check_coaching_findings(communication_reply(), TOPIC, TOPIC["prompt"], LINES)
+    assert checked["gaps"][0]["kind"] == "unclear"
+    assert checked["gap_check"]["status"] == "unavailable"
+    assert checked["points"] == communication_reply()["points"]
+
+
+def test_no_knowledge_gap_needs_no_check(fake_llm):
+    communication = communication_reply(gaps=[], points=[])
+    assert coach.check_coaching_findings(communication, TOPIC, TOPIC["prompt"], LINES) == communication
+    assert not fake_llm.requests
+
+
+def test_generation_schema_requires_a_rewrite_only_for_problems(fake_llm):
+    fake_llm.queue("communication", communication_reply())
+    coach.communication_pass(LINES, VOICE, NOTES, {"prompt": TOPIC["prompt"], "duration": 21})
+    defs = fake_llm.requests_for("communication")[0]["body"]["format"]["$defs"]
+    assert defs["CommunicationStrength"]["properties"]["rewrite"]["const"] == ""
+    assert defs["CommunicationProblem"]["properties"]["rewrite"]["minLength"] == 1
+
+
+def test_accuracy_is_unscored_without_an_assessed_claim(fake_llm):
+    technical = {**TECHNICAL, "corrections": [], "concepts": [{**c, "status": "missing", "line_ids": []}
+                                                            for c in TECHNICAL["concepts"]]}
+    remaining = [name for name in CORE if name != "Technical accuracy"]
+    fake_llm.queue("writer", structure_reply(scores=scores(names=remaining), key_points=[
+        {"text": "Teach one mechanism.", "line_ids": []} for _ in range(3)
+    ]))
+    review, _ = coach.review_structure_pass(technical, COMMUNICATION, TIMING, NOTES, None, None)
+    assert "Too little technical evidence" in review["accuracy_unscored"]
+    assert [s["name"] for s in review["scores"]] == remaining
+
+
+def test_comparison_schema_excludes_previously_unscored_dimensions(fake_llm):
+    previous = {"scores": scores(names=["Overall"])}
+    change = {"name": "Overall", "before": 6.5, "after": 6.5}
+    fake_llm.queue("writer", structure_reply(comparison={"changes": [change], "what_changed": "A new example."}))
+    coach.review_structure_pass(TECHNICAL, COMMUNICATION, TIMING, NOTES, None, previous)
+    defs = fake_llm.requests_for("writer")[0]["body"]["format"]["$defs"]
+    assert defs["ScoreChange"]["properties"]["name"]["enum"] == ["Overall"]

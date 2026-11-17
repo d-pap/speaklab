@@ -43,6 +43,7 @@ def writer_scoring(overall):
 def test_picking_a_topic_creates_nothing(client):
     thread = get_thread(client, "hash-maps")
     assert thread["topic"]["id"] == "hash-maps"
+    assert "study_reference" not in thread
     assert thread["session_id"] is None and thread["attempts"] == [] and thread["messages"] == []
     assert thread["recording"] == {"can_record": True, "reason": None, "replace_number": None, "next_number": 1}
     assert thread["latest_checklist"] == [] and thread["next_attempt_after"] is None
@@ -76,6 +77,8 @@ def test_first_upload_creates_thread_and_attempt_1(client, wav_bytes):
     assert session["id"] == attempt["session_id"] and session["topic_id"] == "hash-maps"
     assert session["prompt_kind"] == "Compare" and session["completed_at"] is None
     thread = get_thread(client)
+    assert thread["study_reference"]["example"]
+    assert thread["study_reference"]["sources"]
     assert thread["session_id"] == session["id"]
     [stored] = thread["attempts"]
     assert stored["id"] == attempt["id"] and stored["target_duration"] == 180

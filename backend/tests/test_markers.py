@@ -77,3 +77,8 @@ def test_empty_lines_drops_markers_without_crashing():
 def test_malformed_marker_stays_literal():
     text = "see [[l7]] and [[L7 ]] and [[L7:\"\"]]"
     assert resolve(text, LINES) == [{"type": "text", "text": text}]
+
+
+def test_model_range_becomes_two_grounded_links_or_one_known_endpoint():
+    assert strip_unknown("[[L1–L7]] [[L1-L99]] [[L7-L7]]", LINES) == "[[L1]]–[[L7]] [[L1]] [[L7]]"
+    assert [part["line_id"] for part in refs(resolve("[[L1-L7]]", LINES))] == ["L1", "L7"]

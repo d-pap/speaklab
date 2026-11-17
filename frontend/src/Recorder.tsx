@@ -17,24 +17,41 @@ import type { Attempt } from "./types";
 /** Records or imports one attempt. The caller shows the topic and question in `brief` and
  * decides where the audio goes (`onUpload`); `onSaved` runs once the recording is no longer
  * unsaved, so the caller can navigate away without a leave warning. */
-export function Recorder({
-  number,
-  duration,
-  style,
-  onUpload,
-  onSaved,
-  onDirty,
-  brief,
-}: {
+interface AttemptRecorderProps {
   number: number;
-  /** Target speaking time in seconds. */
   duration: number;
   style: string;
   onUpload: (audio: Blob) => Promise<Attempt>;
   onSaved: (attempt: Attempt) => void;
   onDirty: (value: boolean) => void;
   brief?: ReactNode;
+}
+
+export function Recorder(props: AttemptRecorderProps) {
+  return <RecordingPanel duration={props.duration} attempt={props} />;
+}
+
+export function RehearsalRecorder() {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className="rehearsal-recorder"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>Record and listen to a rehearsal</summary>
+      {open && <RecordingPanel duration={60} />}
+    </details>
+  );
+}
+
+function RecordingPanel({
+  duration,
+  attempt,
+}: {
+  duration: number;
+  attempt?: AttemptRecorderProps;
 }) {
+  const { onDirty, number, brief } = attempt ?? {};
   const [state, setState] = useState<
     "idle" | "requesting" | "recording" | "paused" | "stopped"
   >("idle");
@@ -68,7 +85,7 @@ export function Recorder({
       if (recorder.current && recorder.current.state !== "inactive")
         recorder.current.stop();
       release();
-      onDirty(false);
+      onDirty?.(false);
     };
   }, [onDirty]);
   useEffect(() => {
@@ -91,18 +108,22 @@ export function Recorder({
     return () => clearInterval(id);
   }, [state, duration]);
   useEffect(() => {
-    if (state === "idle") return;
+    if (!attempt || state === "idle") return;
     const guard = (event: BeforeUnloadEvent) => {
       event.preventDefault();
     };
     window.addEventListener("beforeunload", guard);
     return () => window.removeEventListener("beforeunload", guard);
-  }, [state]);
+  }, [state, attempt]);
 
   async function start() {
     if (
       blob &&
-      !window.confirm("Replace this unsaved recording with a new attempt?")
+      !window.confirm(
+        attempt
+          ? "Replace this unsaved recording with a new attempt?"
+          : "Replace this rehearsal clip?",
+      )
     )
       return;
     setError("");
@@ -110,7 +131,9 @@ export function Recorder({
     try {
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder)
         throw new Error(
-          "This browser cannot record here. Use a recent browser on localhost, or import an audio file below.",
+          attempt
+            ? "This browser cannot record here. Use a recent browser on localhost, or import an audio file below."
+            : "Microphone recording requires a supported browser on HTTPS or localhost.",
         );
       const media = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -194,14 +217,14 @@ export function Recorder({
       setBlob(null);
       rec.start(250);
       setState("recording");
-      onDirty(true);
+      onDirty?.(true);
       frame.current = requestAnimationFrame(draw);
     } catch (e) {
       release();
       setState(blob ? "stopped" : "idle");
       setError(
         e instanceof DOMException && e.name === "NotAllowedError"
-          ? "Microphone access was denied. Allow microphone access in your browser’s site settings, then try again. You can also import a recording."
+          ? "Microphone access was denied. Allow microphone access in your browser’s site settings, then try again."
           : errorText(e),
       );
     }
@@ -222,13 +245,13 @@ export function Recorder({
       recorder.current.stop();
   }
   async function save() {
-    if (!blob || saving) return;
+    if (!attempt || !blob || saving) return;
     setSaving(true);
     setError("");
     try {
-      const saved = await onUpload(blob);
-      onDirty(false);
-      onSaved(saved);
+      const saved = await attempt.onUpload(blob);
+      onDirty?.(false);
+      attempt.onSaved(saved);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -248,11 +271,15 @@ export function Recorder({
           />
           {
             {
-              idle: "A moment to find your voice",
+              idle: attempt
+                ? "A moment to find your voice"
+                : "Ready to rehearse",
               requesting: "Waiting for microphone access…",
               recording: "Recording your explanation",
               paused: "Paused · take a breath",
-              stopped: "Your explanation, captured",
+              stopped: attempt
+                ? "Your explanation, captured"
+                : "Listen to both takes",
             }[state]
           }
         </div>
@@ -263,9 +290,11 @@ export function Recorder({
           {timeLabel(Math.max(0, duration - elapsed))}
         </div>
         <p className="timer-caption">
-          {state === "stopped"
-            ? "Ready when you are"
-            : `${duration / 60} minute practice · ${style.toLowerCase()}`}
+          {!attempt
+            ? "Try both deliveries in one clip. Closing the recorder clears this clip."
+            : state === "stopped"
+              ? "Ready when you are"
+              : `${duration / 60} minute practice · ${attempt.style.toLowerCase()}`}
         </p>
         <div className="waveform">
           <canvas
@@ -315,11 +344,13 @@ export function Recorder({
             </button>
           )}
         </div>
-        <div className="record-tip">
-          {number === 1
-            ? "Start with what you know. The gaps are where learning begins."
-            : "Explain the idea in your own words. You don’t need a perfect script."}
-        </div>
+        {attempt && (
+          <div className="record-tip">
+            {number === 1
+              ? "Start with what you know. The gaps are where learning begins."
+              : "Explain the idea in your own words. You don’t need a perfect script."}
+          </div>
+        )}
         {blob && (
           <div className="playback-draft">
             <audio
@@ -330,7 +361,7 @@ export function Recorder({
             <a
               className="text-button"
               href={url}
-              download={`speaklab-attempt-${number}.${blob.type.includes("mp4") ? "mp4" : blob.type.includes("wav") ? "wav" : "webm"}`}
+              download={`speaklab-${attempt ? `attempt-${number}` : "rehearsal"}.${blob.type.includes("mp4") ? "mp4" : blob.type.includes("wav") ? "wav" : "webm"}`}
             >
               <Download size={15} /> Keep a copy
             </a>
@@ -338,53 +369,57 @@ export function Recorder({
         )}
       </section>
       {error && <ErrorNotice message={error} />}
-      <div className="record-footer">
-        <PrivateNote />
-        {blob ? (
-          <button
-            className="button primary"
-            disabled={saving}
-            onClick={() => void save()}
-          >
-            {saving
-              ? "Saving your audio…"
-              : number === 1
-                ? "Save & explore feedback"
-                : `Save & review attempt ${number}`}
-            <ArrowRight size={17} />
-          </button>
-        ) : (
-          <label className={`text-button import ${active ? "disabled" : ""}`}>
-            <Upload size={15} /> Import audio
-            <input
-              type="file"
-              accept="audio/*,.webm,.mp4"
-              disabled={active || state === "requesting"}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  if (file.size > 30 * 1024 * 1024) {
-                    setError("Choose an audio file under 30 MB.");
-                    return;
+      {attempt && (
+        <div className="record-footer">
+          <PrivateNote />
+          {blob ? (
+            <button
+              className="button primary"
+              disabled={saving}
+              onClick={() => void save()}
+            >
+              {saving
+                ? "Saving your audio…"
+                : number === 1
+                  ? "Save & explore feedback"
+                  : `Save & review attempt ${number}`}
+              <ArrowRight size={17} />
+            </button>
+          ) : (
+            <label className={`text-button import ${active ? "disabled" : ""}`}>
+              <Upload size={15} /> Import audio
+              <input
+                type="file"
+                accept="audio/*,.webm,.mp4"
+                disabled={active || state === "requesting"}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    if (file.size > 30 * 1024 * 1024) {
+                      setError("Choose an audio file under 30 MB.");
+                      return;
+                    }
+                    setBlob(file);
+                    setState("stopped");
+                    setError("");
+                    onDirty?.(true);
                   }
-                  setBlob(file);
-                  setState("stopped");
-                  setError("");
-                  onDirty(true);
-                }
-                e.target.value = "";
-              }}
-            />
-          </label>
-        )}
-      </div>
-      <div className="gentle-note">
-        <AudioLines size={18} />
-        <span>
-          Listen for one clear idea, one concrete example, and a natural place
-          to pause.
-        </span>
-      </div>
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          )}
+        </div>
+      )}
+      {attempt && (
+        <div className="gentle-note">
+          <AudioLines size={18} />
+          <span>
+            Listen for one clear idea, one concrete example, and a natural place
+            to pause.
+          </span>
+        </div>
+      )}
     </div>
   );
 }

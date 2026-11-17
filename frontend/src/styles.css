@@ -2255,12 +2255,19 @@ mark.filler.possible {
 }
 .composer {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: flex-end;
   position: sticky;
   bottom: 0;
   padding: 8px 0;
   background: var(--bg);
+}
+.coach-practice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-basis: 100%;
 }
 .composer textarea {
   flex: 1;
@@ -2497,4 +2504,134 @@ mark.filler.possible {
   .attempt-options.single {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.coach-chat .review-section + .review-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.coach-chat .message.md .review-section > .md-heading {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+.review-reading > summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 550;
+  padding-block: 4px;
+}
+.review-reading[open] > summary {
+  margin-bottom: 8px;
+}
+.section-timing,
+.review-moment {
+  margin: 8px 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.section-timing {
+  display: grid;
+  gap: 10px;
+}
+.timing-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 10px;
+}
+.timing-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.timing-value span,
+.review-moment header > span {
+  color: var(--muted);
+}
+.timing-track {
+  grid-column: 1 / -1;
+  height: 6px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.timing-track > div {
+  height: 100%;
+  background: var(--muted);
+  border-radius: inherit;
+}
+.review-moment header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+}
+.moment-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+  font-variant-numeric: tabular-nums;
+}
+.moment-link:hover {
+  border-color: var(--muted);
+}
+.review-moment blockquote {
+  margin: 10px 0;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--muted);
+}
+.coach-chat .message.md .review-moment p:last-child {
+  margin-bottom: 0;
+}
+.moment-rewrite strong {
+  display: block;
+  font-size: 0.85rem;
+}
+.study-reference p {
+  margin: 6px 0;
+}
+.study-reference a {
+  text-decoration: underline;
+}
+.study-reference > summary,
+.rehearsal-recorder > summary {
+  cursor: pointer;
+  padding: 6px 0;
+  font-weight: 550;
+}
+.rehearsal-recorder .record-card {
+  padding: 14px;
+}
+.rehearsal-recorder .timer {
+  font-size: 38px;
+  margin: 4px 0;
+  letter-spacing: -1px;
+}
+.rehearsal-recorder .waveform {
+  height: 30px;
+  margin: 8px auto;
+  overflow: hidden;
+}
+.coach-code {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.9em;
+}
+.message-content :not(pre) > code,
+.archived-review :not(pre) > code {
+  background: var(--accent-soft);
+  border-radius: 3px;
+  padding-inline: 0.22em;
+  font-size: 0.92em;
 }

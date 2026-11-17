@@ -112,17 +112,36 @@ class Section(StrictModel):
     last_line: str
 
 
-class CommunicationPoint(StrictModel):
-    kind: Literal["strength", "problem"]
+class CommunicationStrength(StrictModel):
+    kind: Literal["strength"]
     line_id: str
     observation: str = Field(min_length=1, max_length=500)
-    rewrite: str = Field(max_length=600)
+    rewrite: Literal[""]
+
+
+class CommunicationProblem(StrictModel):
+    kind: Literal["problem"]
+    line_id: str
+    observation: str = Field(min_length=1, max_length=500)
+    rewrite: str = Field(min_length=1, max_length=600)
 
 
 class SectionGap(StrictModel):
     section_label: str
     kind: Literal["knowledge", "communication", "unclear"]
     reason: str = Field(min_length=1, max_length=400)
+
+
+class GapVerdict(StrictModel):
+    gap_id: str
+    kind: Literal["knowledge", "communication", "unclear", "withdraw"]
+    reason: str = Field(min_length=1, max_length=400)
+    evidence: list[str] = Field(max_length=4)
+
+
+class GapCheck(StrictModel):
+    verdicts: list[GapVerdict] = Field(max_length=6)
+    withdraw_points: list[int] = Field(max_length=6)
 
 
 class FocusObservation(StrictModel):
@@ -132,7 +151,7 @@ class FocusObservation(StrictModel):
 
 class CommunicationAnalysis(StrictModel):
     sections: list[Section] = Field(min_length=1, max_length=6)
-    points: list[CommunicationPoint] = Field(max_length=6)
+    points: list[CommunicationStrength | CommunicationProblem] = Field(max_length=6)
     gaps: list[SectionGap] = Field(max_length=6)
     focus: list[FocusObservation] = Field(max_length=6)
 
@@ -160,7 +179,7 @@ class Comparison(StrictModel):
 
 
 class ReviewStructure(StrictModel):
-    scores: list[Score] = Field(min_length=7, max_length=10)
+    scores: list[Score] = Field(min_length=6, max_length=10)
     key_points: list[KeyPoint] = Field(min_length=3, max_length=3)
     checklist: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(min_length=2, max_length=5)
     comparison: Comparison | None = None

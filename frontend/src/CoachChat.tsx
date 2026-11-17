@@ -7,6 +7,8 @@ import { renderMarkdown } from "./markdown";
 import { renderParts, stripMarkersForStreaming } from "./markers";
 import { progressLine, reviewing } from "./Practice";
 import { isTooShort } from "./ReviewTab";
+import { CoachReview } from "./CoachReview";
+import { RehearsalRecorder } from "./Recorder";
 import { ResponseFeedback } from "./ResponseFeedback";
 import type { Message, Thread } from "./types";
 
@@ -52,8 +54,8 @@ export function CoachChat({
     if (pending !== null) end.current?.scrollIntoView?.({ block: "nearest" });
   }, [streamed, pending]);
 
-  async function send() {
-    const text = draft.trim();
+  async function send(message = draft) {
+    const text = message.trim();
     if (!text || busy || controlBusy || waiting || !thread.session_id) return;
     setError("");
     setPending(text);
@@ -99,7 +101,13 @@ export function CoachChat({
           </div>
         )}
         <div className="message-content">
-          {coach ? renderMarkdown(parts, onRef) : renderParts(parts, onRef)}
+          {coach && m.kind === "review" && attempt ? (
+            <CoachReview attempt={attempt} parts={parts} onRef={onRef} />
+          ) : coach ? (
+            renderMarkdown(parts, onRef)
+          ) : (
+            renderParts(parts, onRef)
+          )}
         </div>
         {coach && <ResponseFeedback message={m} />}
       </div>
@@ -139,6 +147,22 @@ export function CoachChat({
         )}
         <div ref={end} />
       </div>
+      {thread.study_reference && attempt?.transcript && (
+        <details className="study-reference">
+          <summary>Worked example and sources</summary>
+          <p>{thread.study_reference.example}</p>
+          <ul>
+            {thread.study_reference.sources.map((source) => (
+              <li key={source.url}>
+                <a href={source.url} target="_blank" rel="noreferrer">
+                  {source.title}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {hasReview && <RehearsalRecorder />}
       {error && <ErrorNotice message={error} />}
       <form
         className="composer"
@@ -147,6 +171,37 @@ export function CoachChat({
           void send();
         }}
       >
+        {hasReview && !draft && (
+          <div
+            className="coach-practice-actions"
+            aria-label="Practice with your coach"
+          >
+            <button
+              type="button"
+              className="button secondary small"
+              disabled={busy || controlBusy || waiting}
+              onClick={() =>
+                void send(
+                  "Teach me the most useful concept to work on from this attempt. Use a small engineering example, then give me one different case to explain back.",
+                )
+              }
+            >
+              Learn the concept
+            </button>
+            <button
+              type="button"
+              className="button secondary small"
+              disabled={busy || controlBusy || waiting}
+              onClick={() =>
+                void send(
+                  "Pick one moment from my attempt for a short delivery rehearsal. Show me two ways to say that idea with a different pause, stress or pace. Give me one thing to listen for when I try both aloud.",
+                )
+              }
+            >
+              Rehearse my delivery
+            </button>
+          </div>
+        )}
         <label className="sr-only" htmlFor={`chat-${attemptNumber}`}>
           Message the coach
         </label>

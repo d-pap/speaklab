@@ -362,7 +362,7 @@ LONG_REVIEW = "\n\n".join(
 )
 
 
-def test_context_trims_reference_then_analyses_then_review_prose(client, wav_bytes):
+def test_context_keeps_core_teaching_reference_until_last(client, wav_bytes):
     session, attempt = ready(client, wav_bytes)
     lines = [{"id": f"L{i}", "text": f"LINE-{i} " + "speak " * 13, "start": i * 5.0} for i in range(1, 51)]
     analysis = json.loads(attempt["analysis"])
@@ -408,9 +408,9 @@ def test_context_trims_reference_then_analyses_then_review_prose(client, wav_byt
             states.append(state(messages))
     assert states == [
         (True, True, True, True),
-        (False, True, True, True),
-        (False, False, True, True),
-        (False, False, False, True),
+        (True, False, True, True),
+        (True, False, False, True),
+        (True, False, False, False),
         (False, False, False, False),
     ]
     shortened = chat.shorten_review(LONG_REVIEW)

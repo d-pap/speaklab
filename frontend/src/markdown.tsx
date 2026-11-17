@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { renderRef } from "./markers";
+import { lineLabel, renderRef } from "./markers";
 import type { MessagePart } from "./types";
 
 /*
@@ -12,6 +12,7 @@ import type { MessagePart } from "./types";
 type Line = MessagePart[];
 type Block =
   | { kind: "heading"; line: Line }
+  | { kind: "code"; rows: string[] }
   | { kind: "p"; lines: Line[] }
   | { kind: "ul"; items: Line[] }
   | { kind: "ol"; start: number; items: Line[] };
@@ -20,7 +21,7 @@ const HEADING = /^\s{0,3}#{1,6}\s+/;
 const BULLET = /^\s*[-*•]\s+/;
 const NUMBERED = /^\s*(\d{1,3})[.)]\s+/;
 
-function splitLines(parts: MessagePart[]): Line[] {
+export function splitLines(parts: MessagePart[]): Line[] {
   const lines: Line[] = [[]];
   for (const part of parts) {
     if (part.type !== "text") {
@@ -50,7 +51,25 @@ const blank = (line: Line) =>
 
 function blocks(lines: Line[]): Block[] {
   const result: Block[] = [];
+  let code: string[] | null = null;
   for (const line of lines) {
+    const raw = line
+      .map((part) =>
+        part.type === "text"
+          ? part.text
+          : part.quote || lineLabel(part.line_id, part.start),
+      )
+      .join("");
+    if (code) {
+      if (/^\s*```\s*$/.test(raw)) code = null;
+      else code.push(raw);
+      continue;
+    }
+    if (/^\s*```[\w.+-]*\s*$/.test(raw)) {
+      code = [];
+      result.push({ kind: "code", rows: code });
+      continue;
+    }
     const last = result[result.length - 1];
     if (blank(line)) {
       result.push({ kind: "p", lines: [] }); // a paragraph break
@@ -83,7 +102,19 @@ function inline(
   key: string,
   onRef: (lineId: string) => void,
 ): ReactNode[] {
-  const markers = line.reduce(
+  const tokens = line.flatMap(
+    (part): (MessagePart | { type: "code"; text: string })[] =>
+      part.type === "ref"
+        ? [part]
+        : part.text
+            .split(/(`[^`]+`)/g)
+            .map((span, index) =>
+              index % 2
+                ? { type: "code", text: span.slice(1, -1) }
+                : { type: "text", text: span },
+            ),
+  );
+  const markers = tokens.reduce(
     (n, part) =>
       n + (part.type === "text" ? part.text.split("**").length - 1 : 0),
     0,
@@ -94,7 +125,11 @@ function inline(
   const out: ReactNode[] = [];
   let strong: ReactNode[] = [];
   const emit = (node: ReactNode) => (bold ? strong : out).push(node);
-  line.forEach((part, i) => {
+  tokens.forEach((part, i) => {
+    if (part.type === "code") {
+      emit(<code key={`${key}-c-${i}`}>{part.text}</code>);
+      return;
+    }
     if (part.type !== "text") {
       emit(renderRef(part, `${key}-ref-${i}`, onRef));
       return;
@@ -120,8 +155,21 @@ export function renderMarkdown(
   parts: MessagePart[],
   onRef: (lineId: string) => void,
 ): ReactNode[] {
-  return blocks(splitLines(parts)).map((block, b) => {
+  return renderMarkdownLines(splitLines(parts), onRef);
+}
+
+export function renderMarkdownLines(
+  lines: Line[],
+  onRef: (lineId: string) => void,
+): ReactNode[] {
+  return blocks(lines).map((block, b) => {
     const key = `md-${b}`;
+    if (block.kind === "code")
+      return (
+        <pre className="coach-code" key={key}>
+          <code>{block.rows.join("\n")}</code>
+        </pre>
+      );
     if (block.kind === "heading")
       return (
         <h4 key={key} className="md-heading">
