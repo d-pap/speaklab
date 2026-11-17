@@ -1,4 +1,4 @@
-export type Stage = "record1" | "feedback" | "learn" | "record2" | "compare";
+export type Stage = "record1" | "review1" | "record2" | "review2";
 export type ConceptStatus = "correct" | "partial" | "missing" | "incorrect";
 export interface Topic {
   id: string;
@@ -120,12 +120,148 @@ export interface Attempt {
   status: string;
   errors: Record<string, string>;
   audio_url: string;
+  lines?: Line[] | null;
+  tokens?: Token[] | null;
+  analysis?: Analysis | null;
+  learner_note?: string | null;
+  note_state?: NoteState | null;
 }
+export type NoteState = "pending" | "submitted" | "skipped" | "legacy";
+export interface Line {
+  id: string;
+  start: number | null;
+  end: number | null;
+  text: string;
+}
+export type Token =
+  | { type: "word"; text: string; line_id: string; start: number | null }
+  | { type: "filler"; text: string; line_id: string; start: number | null }
+  | {
+      type: "possible_filler";
+      text: string;
+      line_id: string;
+      start: number | null;
+    }
+  | { type: "pause"; seconds: number; line_id: string };
+export type PassName = "memory" | "technical" | "communication" | "writer";
+export type PassStatus =
+  "pending" | "running" | "waiting" | "done" | "failed" | "skipped";
+export interface PassState {
+  status: PassStatus;
+  model: string | null;
+  error: string | null;
+  warning?: string | null;
+}
+export interface TranscriptStats {
+  duration?: number;
+  fillers?: number;
+  possible_fillers?: number;
+  pauses_over_1s?: number;
+  longest_pause?: number | null;
+}
+export interface TechnicalAnalysis {
+  concepts: {
+    concept_id: string;
+    status: ConceptStatus;
+    line_ids: string[];
+    note: string;
+  }[];
+  corrections: {
+    line_id: string;
+    claim: string;
+    correction: string;
+    basis: "reference" | "model";
+    reference_ids: string[];
+    verified?: boolean;
+  }[];
+  senior_points: { point: string; basis: "reference" | "model" }[];
+}
+export interface CommunicationAnalysis {
+  sections: { label: string; first_line: string; last_line: string }[];
+  points: {
+    kind: "strength" | "problem";
+    line_id: string;
+    observation: string;
+    rewrite: string;
+  }[];
+  gaps: {
+    section_label: string;
+    kind: "knowledge" | "communication" | "unclear";
+    reason: string;
+  }[];
+  focus: { area: string; observation: string }[];
+}
+export interface Score {
+  name: string;
+  score: number;
+  reason: string;
+}
+export interface ReviewStructure {
+  scores: Score[];
+  key_points: { text: string; line_ids: string[] }[];
+  checklist: string[];
+  comparison: {
+    changes: { name: string; before: number; after: number }[];
+    what_changed: string;
+  } | null;
+}
+export type AttemptReview = ReviewStructure | { too_short: true };
+export interface SectionTiming {
+  label: string;
+  start: number;
+  end: number;
+  seconds: number;
+  percent: number;
+}
+export interface Analysis {
+  version: number;
+  voice_summary: string[];
+  stats: TranscriptStats;
+  passes: Record<PassName, PassState>;
+  technical: TechnicalAnalysis | null;
+  communication: CommunicationAnalysis | null;
+  timing: SectionTiming[];
+  review: AttemptReview | null;
+}
+export type MessagePart =
+  | { type: "text"; text: string }
+  | { type: "ref"; line_id: string; start: number | null; quote: string };
 export interface Message {
   id: number;
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  attempt_number: number;
+  kind: "review" | "chat";
+  parts: MessagePart[];
+  model?: string | null;
+}
+export interface PassSetting {
+  model: string;
+  num_ctx: number;
+  num_predict: number;
+}
+export type PassSettings = Record<
+  "technical" | "communication" | "writer" | "chat" | "memory",
+  PassSetting
+>;
+export interface CoachNotesVersion {
+  id: number;
+  content: string;
+  created_at: string;
+  source: string;
+  model: string | null;
+  folded_attempt_ids: string[];
+}
+export interface CoachNotes {
+  current: { id: number | null; content: string; model: string | null };
+  versions: CoachNotesVersion[];
+}
+export interface Attempt2Item {
+  session_id: string;
+  topic: Topic;
+  attempt2_after: string | null;
+  available: boolean;
 }
 export interface Session {
   id: string;
@@ -138,6 +274,7 @@ export interface Session {
   prompt: string;
   stage: Stage;
   completed_at: string | null;
+  attempt2_after?: string | null;
   recall: string | null;
   review_due: string | null;
   attempts: Attempt[];
@@ -151,6 +288,7 @@ export interface HistoryItem {
   review_due: string | null;
   attempt_count: number;
   stage: Stage;
+  attempt2_after?: string | null;
   coverage: {
     attempt: number;
     correct: number | null;
@@ -178,34 +316,4 @@ export interface Health {
   server_name: string;
   ollama_url: string;
   whisper_url: string;
-}
-export interface Lesson {
-  estimated_minutes: number;
-  personalized: boolean;
-  objectives: string[];
-  sections: {
-    title: string;
-    minutes: number;
-    body: string;
-    context?: string;
-    practice?: string;
-    question: string;
-  }[];
-  sources: { title: string; url: string }[];
-}
-export interface Comparison {
-  available: boolean;
-  newly_demonstrated: string[];
-  corrected: string[];
-  remaining: string[];
-  note: string;
-  concepts: { id: string; name: string }[];
-  prior_session: {
-    id: string;
-    date: string;
-    available: boolean;
-    days_elapsed: number;
-    previously_demonstrated: number;
-    recalled: number;
-  } | null;
 }

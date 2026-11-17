@@ -1,8 +1,8 @@
 import { ArrowRight, BookOpen, Clock3, Mic, Shuffle } from "lucide-react";
-import type { ReactNode } from "react";
-import { dateLabel } from "./api";
-import { Loading } from "./components";
-import type { HistoryItem, Review, Topic } from "./types";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { api, dateLabel, errorText, put } from "./api";
+import { ErrorNotice, Loading } from "./components";
+import type { Attempt2Item, HistoryItem, Review, Topic } from "./types";
 
 export function Today({
   selected,
@@ -25,9 +25,36 @@ export function Today({
   onShuffle: () => void;
   navigate: (page: string) => void;
 }) {
-  const unfinished = sessions.find((s) => !s.completed_at);
+  // A session whose attempt 2 is open is reached through "Record attempt 2": continuing it
+  // here would open the full attempt 1 review right before the recall test.
+  const today = new Date().toLocaleDateString("en-CA");
+  const attempt2Open = (s: HistoryItem) =>
+    s.stage === "record2" ||
+    (s.stage === "review1" && (!s.attempt2_after || s.attempt2_after <= today));
+  const unfinished = sessions.find((s) => !s.completed_at && !attempt2Open(s));
   const complete = sessions.filter((s) => s.completed_at);
   const due = reviews.filter((r) => r.overdue);
+  const [queue, setQueue] = useState<Attempt2Item[]>([]);
+  const [queueError, setQueueError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const loadQueue = useCallback(() => {
+    setLoadError("");
+    api<Attempt2Item[]>("/attempt2")
+      .then(setQueue)
+      .catch((e) => setLoadError(errorText(e)));
+  }, []);
+  useEffect(() => {
+    loadQueue();
+  }, [loadQueue]);
+  async function openAttempt2(id: string) {
+    setQueueError("");
+    try {
+      await put(`/sessions/${id}/stage`, { stage: "record2" });
+      navigate(`session/${id}`);
+    } catch (e) {
+      setQueueError(errorText(e));
+    }
+  }
   return (
     <div className="today-page">
       <header className="home-heading">
@@ -59,6 +86,30 @@ export function Today({
             Continue session <ArrowRight size={16} />
           </button>
         </div>
+      )}
+      {(queue.length > 0 || loadError) && (
+        <section className="attempt2-list" aria-label="Second attempts">
+          <span className="eyebrow">Second attempts</span>
+          <ul>
+            {queue.map((item) => (
+              <li key={item.session_id}>
+                <strong>{item.topic.title}</strong>
+                {item.available ? (
+                  <button
+                    className="button primary small"
+                    onClick={() => void openAttempt2(item.session_id)}
+                  >
+                    Record attempt 2
+                  </button>
+                ) : (
+                  <span className="small muted">Opens tomorrow</span>
+                )}
+              </li>
+            ))}
+          </ul>
+          {loadError && <ErrorNotice message={loadError} retry={loadQueue} />}
+          {queueError && <ErrorNotice message={queueError} />}
+        </section>
       )}
       <div className="today-grid">
         <section className="topic-hero" aria-label="Suggested practice">

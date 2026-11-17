@@ -4,10 +4,15 @@ import httpx
 import pytest
 from conftest import create, upload
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from app import db, main, models
 from app.config import settings
-from app.schemas import TutorReply
+
+
+class Reply(BaseModel):
+    answer: str
+    check_question: str
 
 
 def ollama(monkeypatch, *, offline=False):
@@ -63,7 +68,7 @@ def test_selection_survives_restart_drives_inference_and_preserves_previous_anal
     settings.ollama_model = "environment-default:latest"
     with TestClient(main.app) as restarted:
         assert restarted.get("/api/models").json()["selected"] == "gemma4:e4b"
-        models.structured("Tutor", {"question": "Hello"}, TutorReply)
+        models.structured("Tutor", {"question": "Hello"}, Reply)
     chat = next(r for r in calls if r.url.path == "/api/chat")
     assert json.loads(chat.content)["model"] == "gemma4:e4b"
 
@@ -79,7 +84,7 @@ def test_invalid_selection_cannot_replace_current_model(client, monkeypatch, nam
     assert settings.ollama_model == before and db.one("SELECT * FROM app_settings") is None
 
 
-def test_model_switch_waits_for_analysis_and_tutor(client, monkeypatch, wav_bytes):
+def test_model_switch_waits_for_analysis_and_coach_reply(client, monkeypatch, wav_bytes):
     a = upload(client, create(client), wav_bytes)
     calls = ollama(monkeypatch)
     db.execute("UPDATE attempts SET status='processing' WHERE id=?", (a["id"],))
@@ -98,3 +103,32 @@ def test_offline_picker_preserves_saved_selection_and_allows_retry(client, monke
     assert client.put("/api/settings/model", json={"model": "qwen3.5:9b-q4_K_M"}).status_code == 503
     assert settings.ollama_model == "gemma4:e4b"
     assert db.one("SELECT value FROM app_settings WHERE key='ollama_model'")["value"] == "gemma4:e4b"
+
+
+def test_single_model_switch_sets_all_passes_and_keeps_limits(client, monkeypatch):
+    ollama(monkeypatch)
+    client.put(
+        "/api/settings/passes",
+        json={
+            "passes": {
+                n: {"model": "qwen3.5:9b-q4_K_M", "num_ctx": 6000 + i, "num_predict": 1000 + i}
+                for i, n in enumerate(["technical", "communication", "writer", "chat", "memory"])
+            }
+        },
+    )
+    before = client.get("/api/settings/passes").json()
+    assert client.put("/api/settings/model", json={"model": "gemma4:e4b"}).status_code == 200
+    after = client.get("/api/settings/passes").json()
+    assert set(after) == set(before) and len(after) == 5
+    for name, item in after.items():
+        assert item["model"] == "gemma4:e4b"
+        assert item["num_ctx"] == before[name]["num_ctx"]
+        assert item["num_predict"] == before[name]["num_predict"]
+
+
+def test_rejected_model_leaves_passes_unchanged(client, monkeypatch):
+    ollama(monkeypatch)
+    before = client.get("/api/settings/passes").json()
+    assert client.put("/api/settings/model", json={"model": "embed:latest"}).status_code == 422
+    assert client.get("/api/settings/passes").json() == before
+    assert db.one("SELECT * FROM app_settings") is None

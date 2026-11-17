@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRight,
   CircleStop,
@@ -19,11 +19,13 @@ export function Recorder({
   number,
   onSaved,
   onDirty,
+  brief,
 }: {
   session: Session;
   number: number;
   onSaved: () => Promise<void>;
   onDirty: (value: boolean) => void;
+  brief?: ReactNode;
 }) {
   const [state, setState] = useState<
     "idle" | "requesting" | "recording" | "paused" | "stopped"
@@ -240,6 +242,7 @@ export function Recorder({
         <h1>{session.topic.title}</h1>
         <p>{session.prompt}</p>
       </div>
+      {brief}
       <section
         className={`record-card ${state === "recording" ? "is-recording" : ""}`}
       >
@@ -351,7 +354,7 @@ export function Recorder({
               ? "Saving your audio…"
               : number === 1
                 ? "Save & explore feedback"
-                : "Save & compare attempts"}
+                : "Save & review attempt 2"}
             <ArrowRight size={17} />
           </button>
         ) : (

@@ -24,10 +24,12 @@ import {
 } from "lucide-react";
 import { api, dateLabel, errorText, post, put } from "./api";
 import { Empty, ErrorNotice, Loading } from "./components";
-import { ComparisonView, Feedback, processing } from "./Practice";
-import { Learning } from "./Learning";
+import { reviewing } from "./Practice";
+import { ReviewPage } from "./ReviewPage";
+import { reviewStructure } from "./ReviewTab";
 import { Today } from "./Today";
 import { Recorder } from "./Recorder";
+import { CoachNotes } from "./CoachNotes";
 import { ModelPicker } from "./ModelPicker";
 import type {
   Health,
@@ -54,10 +56,9 @@ const styles = [
 ];
 const steps: [Stage, string][] = [
   ["record1", "Explain"],
-  ["feedback", "Reflect"],
-  ["learn", "Learn"],
+  ["review1", "Review"],
   ["record2", "Try again"],
-  ["compare", "Compare"],
+  ["review2", "Review again"],
 ];
 const route = () => location.hash.replace(/^#\/?/, "") || "today";
 
@@ -200,14 +201,28 @@ export default function App() {
     if (page === "today" || page === "history")
       void loadDashboard().catch((e) => setError(errorText(e)));
   }, [page, loadDashboard]);
+  // A session fetched for a page the learner has since left is dropped, never shown.
+  const currentSessionId = useRef(sessionId);
+  currentSessionId.current = sessionId;
+  const acceptSession = useCallback((next: Session) => {
+    if (next.id === currentSessionId.current) setSession(next);
+  }, []);
   const refreshSession = useCallback(async () => {
-    if (sessionId) setSession(await api<Session>(`/sessions/${sessionId}`));
-  }, [sessionId]);
+    if (sessionId) acceptSession(await api<Session>(`/sessions/${sessionId}`));
+  }, [sessionId, acceptSession]);
   useEffect(() => {
     setSession(null);
     if (sessionId) void refreshSession().catch((e) => setError(errorText(e)));
   }, [sessionId, refreshSession]);
-  const running = session?.attempts.some(processing);
+  // Poll while analysis runs or a review is on its way (the note box, a queued writer).
+  const running = session?.attempts.some(reviewing);
+  // From review2 on both attempts are reachable; attempt 2 opens first.
+  const [viewedAttempt, setViewedAttempt] = useState<1 | 2>(2);
+  useEffect(() => setViewedAttempt(2), [sessionId, session?.stage]);
+  const reviewedAttempt: 1 | 2 =
+    session?.stage === "review2" && session.attempts.some((a) => a.number === 2)
+      ? viewedAttempt
+      : 1;
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(
@@ -238,7 +253,7 @@ export default function App() {
     if (!session) return;
     setError("");
     try {
-      setSession(
+      acceptSession(
         await put<Session>(`/sessions/${session.id}/stage`, { stage }),
       );
       window.scrollTo(0, 0);
@@ -422,14 +437,22 @@ export default function App() {
                     const current = steps.findIndex(
                       (v) => v[0] === session.stage,
                     );
+                    const count = session.attempts.length;
+                    // The attempt 1 review stays closed while attempt 2 is recorded or reviewed,
+                    // so attempt 2 tests what the learner remembers. Attempt 2's recorder is
+                    // offered only until attempt 2 is saved (the backend refuses it after).
                     const enabled =
                       !dirty &&
                       !session.completed_at &&
                       (s === "record1"
                         ? session.stage === "record1"
-                        : s === "compare"
-                          ? session.attempts.length === 2
-                          : session.attempts.length > 0);
+                        : s === "review1"
+                          ? count > 0 && current <= 1
+                          : s === "record2"
+                            ? count > 0 &&
+                              (session.stage === "review1" ||
+                                session.stage === "record2")
+                            : session.attempts.some((a) => a.number === 2));
                     return (
                       <button
                         className={`${session.stage === s ? "current" : ""} ${i < current ? "done" : ""}`}
@@ -444,32 +467,76 @@ export default function App() {
                     );
                   })}
                 </nav>
-                {session.stage === "record1" || session.stage === "record2" ? (
+                {session.stage === "record1" ? (
                   <Recorder
-                    key={session.stage}
+                    key="record1"
                     session={session}
-                    number={session.stage === "record1" ? 1 : 2}
+                    number={1}
                     onSaved={refreshSession}
                     onDirty={onDirty}
                   />
-                ) : session.stage === "feedback" ? (
-                  <Feedback
+                ) : session.stage === "record2" ? (
+                  <Recorder
+                    key="record2"
                     session={session}
-                    onRefresh={refreshSession}
-                    onNext={() => void changeStage("learn")}
-                  />
-                ) : session.stage === "learn" ? (
-                  <Learning
-                    session={session}
-                    onRefresh={refreshSession}
-                    onNext={() => void changeStage("record2")}
+                    number={2}
+                    onSaved={refreshSession}
+                    onDirty={onDirty}
+                    brief={<DayTwo session={session} />}
                   />
                 ) : (
-                  <ComparisonView
-                    session={session}
-                    onRefresh={refreshSession}
-                    onHome={() => navigate("today")}
-                  />
+                  <>
+                    {session.stage === "review2" &&
+                      session.attempts.some((a) => a.number === 1) &&
+                      session.attempts.some((a) => a.number === 2) && (
+                        <div
+                          className="attempt-switch"
+                          role="group"
+                          aria-label="Choose an attempt"
+                        >
+                          {([1, 2] as const).map((n) => (
+                            <button
+                              key={n}
+                              aria-pressed={viewedAttempt === n}
+                              className={viewedAttempt === n ? "on" : ""}
+                              onClick={() => setViewedAttempt(n)}
+                            >
+                              Attempt {n}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    <ReviewPage
+                      key={`${session.stage}-${reviewedAttempt}`}
+                      session={session}
+                      attemptNumber={reviewedAttempt}
+                      onSession={acceptSession}
+                    />
+                    <div className="page-actions">
+                      <p className="muted small">
+                        {session.stage === "review1"
+                          ? session.attempt2_after &&
+                            session.attempt2_after >
+                              new Date().toLocaleDateString("en-CA")
+                            ? "Attempt 2 opens tomorrow, so it tests what you remember."
+                            : "Attempt 2 is open. Record it from memory."
+                          : session.completed_at
+                            ? session.review_due
+                              ? `Your next memory check is on ${dateLabel(session.review_due)}.`
+                              : "This session is complete."
+                            : "The session completes once this review is written."}
+                      </p>
+                      <button
+                        className="button primary"
+                        onClick={() => navigate("today")}
+                      >
+                        {session.stage === "review1"
+                          ? "Done for today"
+                          : "Back to today"}
+                        <ArrowRight size={17} />
+                      </button>
+                    </div>
+                  </>
                 )}
               </>
             ) : (
@@ -725,10 +792,9 @@ export default function App() {
                 <div>
                   <h3>Immediate improvement is one piece of the story.</h3>
                   <p>
-                    After a later review, the comparison screen shows which
-                    previously demonstrated concepts appeared in your new cold
-                    attempt. Same-day improvement is kept separate from
-                    longer-term recall.
+                    Attempt 2 comes on a later day, so its review shows what you
+                    remembered, not what you just read. Each review after that
+                    starts from memory too.
                   </p>
                 </div>
               </section>
@@ -756,7 +822,7 @@ export default function App() {
                 <section className="panel model-card">
                   <div className="panel-heading">
                     <Sparkles size={20} />
-                    <h2>Technical tutor</h2>
+                    <h2>Coach</h2>
                     <span
                       className={`tag ${health?.ollama ? "completed" : ""}`}
                     >
@@ -764,7 +830,10 @@ export default function App() {
                     </span>
                   </div>
                   <h3>Ollama · {health?.model ?? "qwen3.5:9b-q4_K_M"}</h3>
-                  <p>Grounded concept assessment and interactive tutoring.</p>
+                  <p>
+                    Reviews each attempt and answers your questions in the coach
+                    chat.
+                  </p>
                   <ModelPicker
                     onSaved={(model) => {
                       setHealth((h) => (h ? { ...h, model } : h));
@@ -801,6 +870,7 @@ export default function App() {
                   </span>
                 </section>
               </div>
+              <CoachNotes />
               <button
                 className="button secondary self-start"
                 disabled={busy}
@@ -832,7 +902,7 @@ export default function App() {
                     <dt>Saved on disk</dt>
                     <dd>
                       Original audio, decoded WAV, SQLite sessions, transcripts,
-                      feedback, and tutor conversations.
+                      reviews, coach notes and coach chats.
                     </dd>
                   </div>
                   <div>
@@ -883,5 +953,23 @@ export default function App() {
         </main>
       </div>
     </div>
+  );
+}
+
+/** Before attempt 2: the topic, the prompt and attempt 1's checklist, and nothing else. */
+function DayTwo({ session }: { session: Session }) {
+  const checklist = reviewStructure(
+    session.attempts.find((a) => a.number === 1),
+  )?.checklist;
+  if (!checklist?.length) return null;
+  return (
+    <section className="day-two" aria-labelledby="day-two-heading">
+      <h2 id="day-two-heading">Your checklist for attempt 2</h2>
+      <ul className="checklist">
+        {checklist.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </section>
   );
 }

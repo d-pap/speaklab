@@ -1,28 +1,30 @@
 import json
 import logging
 import uuid
-from contextlib import asynccontextmanager
-from datetime import date, datetime
+from contextlib import asynccontextmanager, contextmanager
+from datetime import date, timedelta
 from pathlib import Path
 from threading import Lock
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.staticfiles import StaticFiles
 
-from . import db, models, pipeline, progress
+from . import chat, db, llm, markers, memory, models, pipeline, progress
 from .audio import decode, detect_container
 from .config import ROOT, settings
-from .curriculum import CATALOG, TOPICS, lesson, prompt, public_topic, recommend
+from .curriculum import CATALOG, TOPICS, prompt, public_topic, recommend
 from .schemas import (
-    Completion,
+    ChatInput,
+    CoachNotesEdit,
+    LearnerNote,
     ModelSelection,
-    Reanalysis,
+    PassSettings,
     SessionCreate,
     StageChange,
     TranscriptEdit,
-    TutorInput,
 )
 from .security import configure_browser_security
 
@@ -50,12 +52,15 @@ log.handlers = [handler]
 log.setLevel(logging.INFO)
 log.propagate = False
 mutation_lock = Lock()
-tutor_lock = Lock()
+tutor_lock = Lock()  # one coach chat reply at a time
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.initialize()
+    pipeline.complete_legacy_sessions()  # migrated compare sessions have no review still to come
+    pipeline.recover_writers()  # a writer queued before a restart still runs
+    pipeline.sweep_note_deadlines()  # a restart during the note wait can't leave a review stuck
     selection = db.one("SELECT value FROM app_settings WHERE key='ollama_model'")
     if selection:
         settings.ollama_model = selection["value"]
@@ -93,6 +98,20 @@ def require_first(session_id: str):
         raise HTTPException(409, "Save your cold attempt before revealing reference material.")
 
 
+def archive(conn, attempt: dict):
+    """Keep the public attempt and its review message before they are replaced."""
+    snapshot = db.attempt_public(attempt)
+    review = conn.execute(
+        "SELECT content FROM messages WHERE session_id=? AND attempt_number=? AND kind='review'",
+        (attempt["session_id"], attempt["number"]),
+    ).fetchone()
+    snapshot["review_message"] = review["content"] if review else None
+    conn.execute(
+        "INSERT INTO analysis_history(attempt_id,created_at,snapshot) VALUES(?,?,?)",
+        (attempt["id"], db.now(), json.dumps(snapshot)),
+    )
+
+
 def require_editable(attempt: dict):
     if get_session(attempt["session_id"])["completed_at"]:
         raise HTTPException(409, "Completed sessions are preserved. Start a new practice session.")
@@ -113,28 +132,48 @@ def available_models():
         raise HTTPException(503, str(exc)) from exc
 
 
-@app.put("/api/settings/model")
-def select_model(body: ModelSelection):
+@contextmanager
+def model_change_guard():
+    """Serialize model-setting changes and refuse them while analysis or a coach reply is active."""
     with mutation_lock:
         if db.one("SELECT id FROM attempts WHERE status IN ('pending','processing') LIMIT 1"):
             raise HTTPException(409, "Wait for recording analysis to finish before changing models.")
         if not tutor_lock.acquire(blocking=False):
-            raise HTTPException(409, "Wait for the tutor to finish answering before changing models.")
+            raise HTTPException(409, "Wait for the coach to finish answering before changing models.")
+        try:
+            yield
+        finally:
+            tutor_lock.release()
+
+
+@app.put("/api/settings/model")
+def select_model(body: ModelSelection):
+    with model_change_guard():
         try:
             models.validate_model_selection(body.model)
-            db.execute(
-                "INSERT INTO app_settings(key,value) VALUES('ollama_model',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (body.model,),
-            )
+            llm.save_global_model(body.model)
             settings.ollama_model = body.model
         except models.ServiceUnavailable as exc:
             raise HTTPException(503, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        finally:
-            tutor_lock.release()
     return {"selected": settings.ollama_model}
+
+
+@app.get("/api/settings/passes")
+def get_pass_settings():
+    return llm.pass_settings()
+
+
+@app.put("/api/settings/passes")
+def put_pass_settings(body: PassSettings):
+    with model_change_guard():
+        try:
+            return llm.save_pass_settings({k: v.model_dump() for k, v in body.passes.items()})
+        except models.ServiceUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/api/topics")
@@ -163,9 +202,9 @@ def recommendation(category: str | None = None, difficulty: str | None = None, e
     reviews = {r["topic_id"]: r for r in db.all_rows("SELECT * FROM reviews")}
     weak = {}
     for row in db.all_rows(
-        "SELECT s.topic_id, a.assessment FROM sessions s JOIN attempts a ON a.session_id=s.id AND a.number=2 WHERE s.completed_at IS NOT NULL ORDER BY s.created_at"
+        "SELECT s.topic_id, a.assessment, a.analysis FROM sessions s JOIN attempts a ON a.session_id=s.id AND a.number=2 WHERE s.completed_at IS NOT NULL ORDER BY s.created_at"
     ):
-        score = progress.mastery(json.loads(row["assessment"]) if row["assessment"] else None)
+        score = progress.mastery(progress.concept_results(row))
         if score is not None:
             weak[row["topic_id"]] = 1 - score
     selected = recommend(candidates, reviews, weak)
@@ -198,13 +237,13 @@ def history():
     for row in rows:
         row["topic"] = public_topic(CATALOG[row["topic_id"]])
         attempts = db.all_rows(
-            "SELECT number, assessment, acoustics FROM attempts WHERE session_id=? ORDER BY number",
+            "SELECT number, assessment, analysis, acoustics FROM attempts WHERE session_id=? ORDER BY number",
             (row["id"],),
         )
         row["attempt_count"] = len(attempts)
         row["coverage"] = []
         for attempt in attempts:
-            a = json.loads(attempt["assessment"]) if attempt["assessment"] else None
+            a = progress.concept_results(attempt)
             m = json.loads(attempt["acoustics"]) if attempt["acoustics"] else {}
             row["coverage"].append(
                 {
@@ -221,9 +260,33 @@ def history():
 
 @app.get("/api/reviews")
 def reviews():
-    rows = db.all_rows("SELECT * FROM reviews ORDER BY due")
+    # A topic with a second attempt still to do shows in the attempt 2 queue instead.
+    rows = db.all_rows(
+        "SELECT * FROM reviews WHERE topic_id NOT IN ("
+        "SELECT topic_id FROM sessions WHERE stage IN ('review1','record2') AND completed_at IS NULL"
+        ") ORDER BY due"
+    )
     return [
         {**r, "topic": public_topic(CATALOG[r["topic_id"]]), "overdue": r["due"] <= date.today().isoformat()}
+        for r in rows
+    ]
+
+
+@app.get("/api/attempt2")
+def attempt2_queue():
+    """Second attempts still to do. They never expire; each opens the day after attempt 1."""
+    today = date.today().isoformat()
+    rows = db.all_rows(
+        "SELECT * FROM sessions WHERE stage IN ('review1','record2') AND completed_at IS NULL "
+        "ORDER BY attempt2_after, created_at"
+    )
+    return [
+        {
+            "session_id": r["id"],
+            "topic": public_topic(CATALOG[r["topic_id"]]),
+            "attempt2_after": r["attempt2_after"],
+            "available": not r["attempt2_after"] or r["attempt2_after"] <= today,
+        }
         for r in rows
     ]
 
@@ -231,6 +294,7 @@ def reviews():
 @app.get("/api/sessions/{session_id}")
 def session_detail(session_id: str):
     session = get_session(session_id)
+    pipeline.sweep_note_deadlines()
     topic = CATALOG[session["topic_id"]]
     session["topic"] = public_topic(topic)
     session["prompt"] = prompt(topic, session["prompt_kind"])
@@ -238,8 +302,19 @@ def session_detail(session_id: str):
         db.attempt_public(a)
         for a in db.all_rows("SELECT * FROM attempts WHERE session_id=? ORDER BY number", (session_id,))
     ]
-    session["messages"] = db.all_rows("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,))
+    lines = {a["number"]: a["lines"] or [] for a in session["attempts"]}
+    session["messages"] = [
+        {**m, "parts": markers.resolve(m["content"], lines.get(m["attempt_number"], []))}
+        for m in db.all_rows("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,))
+    ]
     return session
+
+
+def _attempt1_too_short(session_id: str) -> bool:
+    """A too-short attempt 1 got no feedback, so it may be recorded again."""
+    row = db.one("SELECT analysis FROM attempts WHERE session_id=? AND number=1", (session_id,))
+    analysis = json.loads(row["analysis"]) if row and row["analysis"] else {}
+    return bool((analysis.get("review") or {}).get("too_short"))
 
 
 @app.put("/api/sessions/{session_id}/stage")
@@ -250,9 +325,23 @@ def stage(session_id: str, body: StageChange):
             raise HTTPException(409, "This session is complete.")
         if body.stage != "record1":
             require_first(session_id)
-        if body.stage == "record1" and session["stage"] != "record1":
+        if body.stage == "record1" and session["stage"] != "record1" and not (
+            session["stage"] == "review1" and _attempt1_too_short(session_id)
+        ):
             raise HTTPException(409, "The cold attempt is preserved after feedback is revealed.")
-        if body.stage == "compare" and not db.one(
+        if (
+            body.stage == "record2"
+            and session["stage"] != "record2"
+            and db.one("SELECT id FROM attempts WHERE session_id=? AND number=2", (session_id,))
+        ):
+            raise HTTPException(409, "Attempt 2 is preserved after it is saved.")
+        if (
+            body.stage == "record2"
+            and session["attempt2_after"]
+            and date.today().isoformat() < session["attempt2_after"]
+        ):
+            raise HTTPException(409, "Attempt 2 opens tomorrow so it tests what you remember.")
+        if body.stage == "review2" and not db.one(
             "SELECT id FROM attempts WHERE session_id=? AND number=2", (session_id,)
         ):
             raise HTTPException(409, "Save your second attempt first.")
@@ -305,14 +394,22 @@ async def upload(session_id: str, number: int, file: UploadFile = File(...)):
             with db.connect() as conn:
                 if old:
                     conn.execute("DELETE FROM attempts WHERE id=?", (old["id"],))
+                    # Messages hang off the session, so the replaced attempt's review and chat go
+                    # explicitly. Its running summary went with the attempt row.
+                    conn.execute(
+                        "DELETE FROM messages WHERE session_id=? AND attempt_number=?", (session_id, number)
+                    )
                 conn.execute(
                     "INSERT INTO attempts(id,session_id,number,created_at,audio_file,wav_file,mime,duration) VALUES(?,?,?,?,?,?,?,?)",
                     (identifier, session_id, number, db.now(), str(source), str(wav), mime, duration),
                 )
-                conn.execute(
-                    "UPDATE sessions SET stage=? WHERE id=?",
-                    ("feedback" if number == 1 else "compare", session_id),
-                )
+                if number == 1:
+                    conn.execute(
+                        "UPDATE sessions SET stage='review1', attempt2_after=? WHERE id=?",
+                        ((date.today() + timedelta(days=1)).isoformat(), session_id),
+                    )
+                else:
+                    conn.execute("UPDATE sessions SET stage='review2' WHERE id=?", (session_id,))
             kept = True
             if old:
                 Path(old["audio_file"]).unlink(missing_ok=True)
@@ -344,9 +441,20 @@ def retry(attempt_id: str):
         # Completed sessions can recover missing processing, without altering original evidence.
         if attempt["status"] in {"pending", "processing"}:
             raise HTTPException(409, "Analysis is already running.")
-        db.execute("UPDATE attempts SET status='pending', errors='{}' WHERE id=?", (attempt_id,))
-        pipeline.submit(attempt_id)
+        pipeline.retry(attempt_id)
     return {"status": "pending"}
+
+
+@app.post("/api/attempts/{attempt_id}/note")
+def learner_note(attempt_id: str, body: LearnerNote):
+    text = (body.text or "").strip()
+    if not body.skip and not text:
+        raise HTTPException(422, "Write how it went, or skip.")
+    if get_session(get_attempt(attempt_id)["session_id"])["completed_at"]:
+        raise HTTPException(409, "Completed sessions are preserved. Start a new practice session.")
+    if not pipeline.submit_note(attempt_id, None if body.skip else text, body.skip):
+        raise HTTPException(409, "Your note for this attempt was already sent or skipped.")
+    return db.attempt_public(get_attempt(attempt_id))
 
 
 @app.put("/api/attempts/{attempt_id}/transcript")
@@ -356,32 +464,35 @@ def edit_transcript(attempt_id: str, body: TranscriptEdit):
     with mutation_lock:
         attempt = get_attempt(attempt_id)
         require_editable(attempt)
-        db.execute(
-            "UPDATE attempts SET transcript=?, transcript_source='manual', transcription_version=0, retranscribe=0, segments='[]', assessment=NULL, acoustics=NULL, status='pending', errors='{}' WHERE id=?",
-            (body.text.strip(), attempt_id),
-        )
+        with db.connect() as conn:
+            if attempt["analysis"] or attempt["assessment"]:
+                archive(conn, attempt)  # the new transcript replaces the analysis, review or legacy assessment
+            conn.execute(
+                "UPDATE attempts SET transcript=?, transcript_source='manual', transcription_version=0, retranscribe=0, segments='[]', assessment=NULL, acoustics=NULL, status='pending', errors='{}' WHERE id=?",
+                (body.text.strip(), attempt_id),
+            )
         pipeline.submit(attempt_id)
     return {"status": "pending"}
 
 
-@app.post("/api/attempts/{attempt_id}/reanalyze")
-def reanalyze(attempt_id: str, body: Reanalysis):
+@app.post("/api/attempts/{attempt_id}/rereview")
+def rereview(attempt_id: str):
+    """Run the current pipeline again on a saved attempt, legacy ones included. The earlier
+    snapshot and review message are archived; the recording, transcript and schedule are kept."""
     with mutation_lock:
         attempt = get_attempt(attempt_id)
         if attempt["status"] in {"pending", "processing"}:
-            raise HTTPException(409, "Analysis is already running.")
-        if body.retranscribe and attempt["transcript_source"] == "manual":
-            raise HTTPException(
-                409, "A manually edited transcript is preserved. Reanalyze without retranscribing."
-            )
+            raise HTTPException(409, "The coach is still reviewing this attempt. Wait for it to finish.")
         with db.connect() as conn:
+            archive(conn, attempt)
             conn.execute(
-                "INSERT INTO analysis_history(attempt_id,created_at,snapshot) VALUES(?,?,?)",
-                (attempt_id, db.now(), json.dumps(db.attempt_public(attempt))),
+                "DELETE FROM messages WHERE session_id=? AND attempt_number=? AND kind='review'",
+                (attempt["session_id"], attempt["number"]),
             )
             conn.execute(
-                "UPDATE attempts SET assessment=NULL, acoustics=NULL, retranscribe=?, status='pending', errors='{}' WHERE id=?",
-                (int(body.retranscribe), attempt_id),
+                "UPDATE attempts SET analysis=NULL, note_state='skipped', note_deadline=NULL, "
+                "retranscribe=0, status='pending', errors='{}' WHERE id=?",
+                (attempt_id,),
             )
         pipeline.submit(attempt_id)
     return {"status": "pending"}
@@ -398,109 +509,62 @@ def analysis_history(attempt_id: str):
     ]
 
 
-@app.get("/api/sessions/{session_id}/lesson")
-def get_lesson(session_id: str):
-    session = get_session(session_id)
-    require_first(session_id)
-    attempt = db.one("SELECT assessment FROM attempts WHERE session_id=? AND number=1", (session_id,))
-    assessment = json.loads(attempt["assessment"]) if attempt["assessment"] else None
-    return lesson(CATALOG[session["topic_id"]], assessment)
-
-
-@app.post("/api/sessions/{session_id}/tutor")
-def chat(session_id: str, body: TutorInput):
-    session = get_session(session_id)
-    require_first(session_id)
-    if session["completed_at"]:
-        raise HTTPException(409, "This session is complete. Start a new session to continue tutoring.")
-    if not tutor_lock.acquire(blocking=False):
-        raise HTTPException(409, "The local tutor is already answering. Try again shortly.")
-    try:
-        first = db.attempt_public(
-            db.one("SELECT * FROM attempts WHERE session_id=? AND number=1", (session_id,))
-        )
-        history = db.all_rows("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,))
-        reply = models.tutor(
-            CATALOG[session["topic_id"]],
-            first["transcript"] or "No transcript available.",
-            first["assessment"],
-            history,
-            body.message,
-        )
-        answer = reply["answer"] + (
-            "\n\nCheck your understanding: " + reply["check_question"] if reply["check_question"] else ""
-        )
-        with db.connect() as conn:
-            for role, text in (("user", body.message), ("assistant", answer)):
-                conn.execute(
-                    "INSERT INTO messages(session_id,role,content,created_at) VALUES(?,?,?,?)",
-                    (session_id, role, text, db.now()),
-                )
-        return {"answer": answer}
-    except models.ServiceUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
-    finally:
-        tutor_lock.release()
-
-
-@app.get("/api/sessions/{session_id}/comparison")
-def comparison(session_id: str):
-    session = session_detail(session_id)
-    if len(session["attempts"]) != 2:
-        raise HTTPException(409, "Save both attempts to compare them.")
-    prior_row = db.one(
-        "SELECT a.assessment, s.created_at, s.id FROM sessions s JOIN attempts a ON s.id=a.session_id AND a.number=2 WHERE s.topic_id=? AND s.completed_at IS NOT NULL AND s.created_at<? ORDER BY s.created_at DESC LIMIT 1",
-        (session["topic_id"], session["created_at"]),
+@app.post("/api/sessions/{session_id}/chat")
+def coach_chat(session_id: str, body: ChatInput):
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(422, "Write a message for the coach.")
+    get_session(session_id)
+    attempt = db.one(
+        "SELECT * FROM attempts WHERE session_id=? AND number=?", (session_id, body.attempt_number)
     )
-    prior = None
-    if prior_row:
-        before = json.loads(prior_row["assessment"]) if prior_row["assessment"] else None
-        cold = session["attempts"][0]["assessment"]
-        demonstrated = (
-            {c["concept_id"] for c in before["concepts"] if c["status"] == "correct"} if before else set()
+    if not attempt:
+        raise HTTPException(
+            409,
+            "Record attempt 2 before chatting about it."
+            if body.attempt_number == 2
+            else "Record your first attempt before chatting with the coach.",
         )
-        recalled = {c["concept_id"] for c in cold["concepts"] if c["status"] == "correct"} if cold else set()
-        prior = {
-            "id": prior_row["id"],
-            "date": prior_row["created_at"],
-            "available": bool(before and cold),
-            "previously_demonstrated": len(demonstrated),
-            "recalled": len(demonstrated & recalled),
-            "days_elapsed": (
-                datetime.fromisoformat(session["created_at"]).astimezone().date()
-                - datetime.fromisoformat(prior_row["created_at"]).astimezone().date()
-            ).days,
-        }
-    return {
-        **progress.compare(*session["attempts"], prior),
-        "concepts": [{"id": c["id"], "name": c["name"]} for c in CATALOG[session["topic_id"]]["concepts"]],
-    }
+    if chat.still_reviewing(attempt):
+        raise HTTPException(409, chat.REVIEWING)
+    if not tutor_lock.acquire(blocking=False):
+        raise HTTPException(409, "The coach is already answering. Try again shortly.")
+    released = Lock()
+
+    def release():
+        # Runs from the stream's finally and as a background task: a stream the client drops
+        # before it starts never reaches its finally.
+        if released.acquire(blocking=False):
+            tutor_lock.release()
+
+    def events():
+        try:
+            yield from chat.stream_reply(session_id, body.attempt_number, message)
+        finally:
+            release()
+
+    return StreamingResponse(events(), media_type="text/event-stream", background=BackgroundTask(release))
 
 
-@app.post("/api/sessions/{session_id}/complete")
-def complete(session_id: str, body: Completion):
-    with mutation_lock:
-        session = get_session(session_id)
-        if session["completed_at"]:
-            return session_detail(session_id)
-        attempts = db.all_rows("SELECT * FROM attempts WHERE session_id=? ORDER BY number", (session_id,))
-        if len(attempts) != 2:
-            raise HTTPException(409, "Save both recordings before completing the session.")
-        if any(a["status"] in {"pending", "processing"} for a in attempts):
-            raise HTTPException(409, "Let the current analysis finish before scheduling your review.")
-        assessment = json.loads(attempts[1]["assessment"]) if attempts[1]["assessment"] else None
-        previous = db.one(
-            "SELECT r.*, s.completed_at AS last_completed_at FROM reviews r JOIN sessions s ON s.id=r.last_session_id WHERE r.topic_id=?",
-            (session["topic_id"],),
-        )
-        interval, repetitions, due = progress.schedule(previous, body.recall, progress.mastery(assessment))
-        with db.connect() as conn:
-            conn.execute(
-                "UPDATE sessions SET completed_at=?, recall=?, review_due=?, stage='compare' WHERE id=?",
-                (db.now(), body.recall, due, session_id),
-            )
-            conn.execute(
-                "INSERT INTO reviews(topic_id,interval_days,repetitions,due,last_session_id) VALUES(?,?,?,?,?) ON CONFLICT(topic_id) DO UPDATE SET interval_days=excluded.interval_days,repetitions=excluded.repetitions,due=excluded.due,last_session_id=excluded.last_session_id",
-                (session["topic_id"], interval, repetitions, due, session_id),
-            )
-    return session_detail(session_id)
+@app.get("/api/coach-notes")
+def coach_notes():
+    return {"current": memory.current_notes(), "versions": memory.versions()}
+
+
+# Edit and restore answer with the same {current, versions} view as GET, which the panel shows.
+@app.put("/api/coach-notes")
+def edit_coach_notes(body: CoachNotesEdit):
+    try:
+        memory.save_learner_edit(body.content)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return coach_notes()
+
+
+@app.post("/api/coach-notes/{version_id}/restore")
+def restore_coach_notes(version_id: int):
+    try:
+        memory.restore(version_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return coach_notes()

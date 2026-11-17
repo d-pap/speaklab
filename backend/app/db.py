@@ -25,13 +25,20 @@ def connect():
         conn.close()
 
 
+def _add_columns(db, table: str, wanted: dict[str, str]):
+    existing = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+    for column, definition in wanted.items():
+        if column not in existing:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def initialize():
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     (settings.data_dir / "recordings").mkdir(exist_ok=True)
     with connect() as db:
         db.execute("PRAGMA journal_mode=WAL")
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 3:
+        if version > 4:
             raise RuntimeError("This database was created by a newer SpeakLab version.")
         db.executescript("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -66,11 +73,52 @@ def initialize():
           key TEXT PRIMARY KEY, value TEXT NOT NULL
         );
         """)
-        columns = {row[1] for row in db.execute("PRAGMA table_info(attempts)")}
-        for column in ("retranscribe", "transcription_version"):
-            if column not in columns:
-                db.execute(f"ALTER TABLE attempts ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
-        db.execute("PRAGMA user_version=3")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS coach_notes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, content TEXT NOT NULL,
+              source TEXT NOT NULL CHECK(source IN ('memory','learner','restore')),
+              folded_attempt_ids TEXT NOT NULL DEFAULT '[]'
+            )"""
+        )
+        _add_columns(
+            db,
+            "attempts",
+            {
+                "retranscribe": "INTEGER NOT NULL DEFAULT 0",
+                "transcription_version": "INTEGER NOT NULL DEFAULT 0",
+                "lines": "TEXT",
+                "tokens": "TEXT",
+                "analysis": "TEXT",
+                "learner_note": "TEXT",
+                "note_state": "TEXT NOT NULL DEFAULT 'pending'",
+                "note_deadline": "TEXT",
+                "chat_summary": "TEXT",
+                "chat_summary_through": "INTEGER NOT NULL DEFAULT 0",
+                "chat_summary_model": "TEXT",  # the chat pass's model that wrote the running summary
+            },
+        )
+        _add_columns(
+            db,
+            "messages",
+            # model: the chat pass's model for coach replies; NULL for learner messages and reviews.
+            {"attempt_number": "INTEGER NOT NULL DEFAULT 1", "kind": "TEXT NOT NULL DEFAULT 'chat'", "model": "TEXT"},
+        )
+        _add_columns(db, "sessions", {"attempt2_after": "TEXT"})
+        _add_columns(db, "coach_notes", {"model": "TEXT"})  # the memory pass's model; NULL for edits
+        has_assessment = any(row[1] == "assessment" for row in db.execute("PRAGMA table_info(attempts)"))
+        if version < 4 and has_assessment:
+            db.execute("UPDATE attempts SET note_state='legacy' WHERE assessment IS NOT NULL")
+            # No legacy review and no new one either: no note box to wait on.
+            db.execute("UPDATE attempts SET note_state='skipped' WHERE assessment IS NULL")
+        # Sessions left in the old feedback/learn stages keep attempt 2 open: date of creation.
+        db.execute(
+            "UPDATE sessions SET attempt2_after=substr(created_at,1,10) "
+            "WHERE attempt2_after IS NULL AND (stage IN ('feedback','learn') OR (stage='review1' AND ?<4))",
+            (version,),
+        )
+        db.execute("UPDATE sessions SET stage='review1' WHERE stage IN ('feedback','learn')")
+        db.execute("UPDATE sessions SET stage='review2' WHERE stage='compare'")
+        db.execute("PRAGMA user_version=4")
         db.execute(
             "UPDATE attempts SET status='interrupted', errors=? WHERE status IN ('pending','processing')",
             (
@@ -99,7 +147,7 @@ def execute(sql: str, args: tuple = ()):
 
 def attempt_public(attempt: dict) -> dict:
     result = {k: v for k, v in attempt.items() if k not in {"audio_file", "wav_file"}}
-    for key in ("segments", "acoustics", "assessment", "errors"):
+    for key in ("segments", "acoustics", "assessment", "errors", "lines", "tokens", "analysis"):
         result[key] = json.loads(result[key]) if result[key] else None
     result["audio_url"] = f"/api/attempts/{attempt['id']}/audio"
     return result

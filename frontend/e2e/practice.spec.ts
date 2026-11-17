@@ -70,9 +70,23 @@ test("model picker handles busy work, saved selection, refresh and unavailable s
     selected = route.request().postDataJSON().model;
     return route.fulfill({ json: { selected } });
   });
+  await page.route("**/api/settings/passes", (route) => {
+    const names = ["technical", "communication", "writer", "chat", "memory"];
+    return route.fulfill({
+      json:
+        route.request().method() === "PUT"
+          ? route.request().postDataJSON().passes
+          : Object.fromEntries(
+              names.map((n) => [
+                n,
+                { model: selected, num_ctx: 8192, num_predict: 2048 },
+              ]),
+            ),
+    });
+  });
   await page.goto("/#/settings");
   const picker = page.getByRole("combobox", {
-    name: "Model for feedback & tutoring",
+    name: "Model for feedback & coaching",
   });
   await expect(picker).toHaveValue(selected);
   await picker.selectOption("gemma4:e4b");
@@ -161,92 +175,54 @@ test("complete offline core loop with real API, audio processing, persistence, a
     page.getByRole("button", { name: "Save & explore feedback" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Save & explore feedback" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Your first explanation" }),
-  ).toBeVisible();
+  // Whisper is unreachable in this test, so the recording is kept and no review is written.
   await expect(
     page.getByText("Your recording is safe. Some analysis is unavailable."),
   ).toBeVisible({ timeout: 20000 });
-  await expect(
-    page.getByRole("heading", { name: "Technical understanding" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Communication & voice" }),
-  ).toBeVisible();
-  await page
-    .getByText("Transcript", { exact: false })
-    .filter({ has: page.locator("span") })
-    .first()
-    .click();
+  await expect(page.getByRole("tab", { name: "Transcript" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await page.getByRole("button", { name: "Enter transcript manually" }).click();
   await page
     .getByLabel("Correct or enter what you said")
     .fill(
-      "Um, here is my explanation from memory. I want to understand the mechanism better.",
+      "Um, here is my explanation from memory. I want to understand the mechanism better and explain it to a friend.",
     );
-  await page.getByRole("button", { name: "Save & reanalyze" }).click();
-  await page.getByRole("button", { name: "Build your understanding" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Core idea", exact: true }),
-  ).toBeVisible();
+  await page.getByRole("button", { name: "Save & review again" }).click();
+  const transcript = page.getByRole("tabpanel", { name: "Transcript" });
+  await expect(transcript.locator("mark.filler").first()).toHaveText(/um/i, {
+    timeout: 20000,
+  });
+  // A manual transcript has no line times.
+  await expect(transcript.locator(".ts")).toHaveCount(0);
+  // The local model is unreachable: the failed passes say so and offer a retry.
+  await expect(page.getByRole("button", { name: "Retry" }).first()).toBeVisible(
+    { timeout: 20000 },
+  );
   await page.screenshot({
-    path: "test-results/learning-desktop.png",
+    path: "test-results/review-offline-desktop.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Ask your tutor" }).click();
-  await page
-    .getByLabel("Ask your tutor")
-    .fill("Can you explain the mechanism?");
-  await page.getByRole("button", { name: "Send question" }).click();
-  await expect(page.getByRole("alert")).toContainText("local model");
-  await page.getByRole("button", { name: "Close tutor" }).click();
-  await page.getByRole("button", { name: "Next idea" }).click();
-  await page.getByRole("button", { name: "Check your understanding" }).click();
-  await page
-    .getByLabel("Your explanation from memory")
-    .fill("A short reflection on this concept.");
-  await page
-    .getByRole("button", { name: "Record your second explanation" })
-    .click();
-  await expect(
-    page.getByRole("button", { name: "Start recording", exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText("CURATED REFERENCES")).toHaveCount(0);
-  await page.locator("input[type=file]").setInputFiles({
-    name: "second.wav",
-    mimeType: "audio/wav",
-    buffer: wav(),
-  });
-  await page.getByRole("button", { name: "Save & compare attempts" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Before & after" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Finish & schedule review" }),
-  ).toBeEnabled({ timeout: 20000 });
-  await page.getByRole("button", { name: "Finish & schedule review" }).click();
-  await expect(
-    page.getByText("Your next memory check is scheduled"),
-  ).toBeVisible();
-  await page.screenshot({
-    path: "test-results/comparison-desktop.png",
-    fullPage: true,
-  });
+  await page.getByRole("button", { name: /Try again$/ }).click();
+  await expect(page.getByRole("alert").first()).toContainText(
+    "Attempt 2 opens tomorrow so it tests what you remember.",
+  );
   await page.reload();
-  await expect(
-    page.getByText("Your next memory check is scheduled"),
-  ).toBeVisible();
   expect(page.url()).toBe(sessionUrl);
-  const audio = page.locator("audio").first();
-  expect(
-    await audio.evaluate((el: HTMLAudioElement) => el.readyState),
-  ).toBeGreaterThan(0);
-  await page.getByRole("button", { name: "Practice history" }).click();
   await expect(
-    page.getByRole("heading", { name: "Your review queue" }),
+    page
+      .getByRole("tabpanel", { name: "Transcript" })
+      .locator("mark.filler")
+      .first(),
+  ).toHaveText(/um/i);
+  await page.getByRole("button", { name: "Done for today" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Today’s practice" }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "Practice history", exact: true }).click();
   await expect(
-    page.getByText("Complete", { exact: true }).first(),
+    page.getByText("In progress", { exact: true }).first(),
   ).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -358,183 +334,4 @@ test("mobile layout, filters, settings, and theme remain usable", async ({
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth),
   ).toBeLessThanOrEqual(390);
-});
-
-test("new review exposes factual corrections, contextual fillers, vocabulary and measured pauses", async ({
-  page,
-}) => {
-  const attempt = {
-    id: "speech-fixture",
-    session_id: "insights-fixture",
-    number: 1,
-    created_at: "2026-10-27T12:00:00Z",
-    duration: 3,
-    transcript: "Um, login gives everyone access.",
-    transcript_source: "whisper",
-    transcription_version: 2,
-    segments: [{ start: 0, end: 1, text: "Um, login gives everyone access." }],
-    status: "ready",
-    errors: {},
-    audio_url: "/test-audio.wav",
-    acoustics: {
-      analysis_version: 2,
-      wpm: 100,
-      filler_count: 1,
-      fillers: { um: 1 },
-      fillers_per_minute: 20,
-      filler_candidates: { like: 1 },
-      filler_events: [
-        {
-          term: "um",
-          text: "Um",
-          kind: "hesitation",
-          start: 0.2,
-          timing: "estimated-word",
-          char_start: 0,
-          char_end: 2,
-        },
-      ],
-      pauses: [{ start: 1.2, duration: 0.6 }],
-      pause_count: 1,
-      pause_seconds: 0.6,
-      vocal_foundations: [
-        {
-          foundation: "Pitch & melody",
-          observation: "Measured spread: 2 semitones.",
-          practice: "Try emphasizing a different word.",
-          start: 1,
-          basis: "Test fixture",
-        },
-      ],
-      readability: {
-        available: false,
-        words: 5,
-        sentences: 1,
-        reason: "Needs at least 100 words.",
-        limitation: "Experimental text readability.",
-        method: "Test fixture",
-        basis: "Original unchanged.",
-        repeated_words: [],
-      },
-    },
-    assessment: {
-      summary: "Explicit model test double.",
-      model: "test-double",
-      rubric: "Test rubric",
-      communication: [],
-      next_steps: ["Explain permission checks."],
-      concepts: [
-        {
-          concept_id: "permissions",
-          status: "incorrect",
-          evidence: "login gives everyone access",
-          feedback: "Login does not grant blanket permission.",
-        },
-      ],
-      insights: {
-        version: 2,
-        note: "Selected claims, not exhaustive.",
-        sources: [],
-        claims: [
-          {
-            evidence: "login gives everyone access",
-            verdict: "incorrect",
-            explanation: "Identity and permission are different.",
-            correction: "Check each protected resource.",
-            references: [
-              {
-                id: "permissions",
-                text: "Authorization checks resource permissions.",
-              },
-            ],
-          },
-        ],
-        vocabulary: [
-          {
-            evidence: "login gives everyone access",
-            original: "access",
-            alternative: "permission to read",
-            meaning: "Specifies the operation.",
-            reason: "More precise.",
-            practice: "Check permission to read this document.",
-          },
-        ],
-      },
-    },
-  };
-  await page.route("**/api/sessions/insights-fixture", (route) =>
-    route.fulfill({
-      json: {
-        id: "insights-fixture",
-        topic_id: "auth",
-        topic: { id: "auth", title: "Authentication vs. authorization" },
-        duration: 120,
-        created_at: "2026-10-27T12:00:00Z",
-        style: "Conversational",
-        prompt_kind: "Concept explanation",
-        prompt: "Explain the difference.",
-        stage: "feedback",
-        completed_at: null,
-        attempts: [attempt],
-        messages: [],
-      },
-    }),
-  );
-  await page.route("**/test-audio.wav", (route) =>
-    route.fulfill({ body: wav(), contentType: "audio/wav" }),
-  );
-  await page.goto("/#/session/insights-fixture");
-  await expect(
-    page.getByRole("heading", { name: "Was my explanation accurate?" }),
-  ).toBeVisible();
-  await expect(page.getByText("Check each protected resource.")).toBeVisible();
-  await page
-    .getByText("Vocabulary & further analysis", { exact: true })
-    .click();
-  await expect(
-    page.getByRole("heading", { name: "Build your vocabulary" }),
-  ).toBeVisible();
-  await page
-    .getByText("Vocal foundations & recording details", { exact: true })
-    .click();
-  await page
-    .getByText("Filler words, possible fillers & repetitions", { exact: true })
-    .click();
-  await expect(
-    page.getByText(/Excluded from the hesitation total/),
-  ).toBeVisible();
-  await page
-    .getByText("Annotated transcript & measured pauses", { exact: true })
-    .click();
-  await expect(page.getByText("[pause: 0.6s]", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "0:01 · Hear pause" }).click();
-  await expect
-    .poll(() =>
-      page
-        .getByLabel("Review attempt 1 by timestamp")
-        .evaluate((a: HTMLAudioElement) => a.currentTime),
-    )
-    .toBeGreaterThan(0.8);
-  await page
-    .getByText("Vocal foundations · five ways to practice", { exact: true })
-    .click();
-  await expect(page.getByText("Measured spread: 2 semitones.")).toBeVisible();
-  await page
-    .getByText("Optional reading-level estimate · experimental", {
-      exact: true,
-    })
-    .click();
-  await expect(page.getByText("Needs at least 100 words.")).toBeVisible();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () => document.documentElement.scrollWidth <= window.innerWidth + 1,
-      ),
-    )
-    .toBe(true);
-  await page.screenshot({
-    path: "test-results/insights-mobile.png",
-    fullPage: true,
-  });
 });

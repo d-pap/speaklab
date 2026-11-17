@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timedelta
 
 
@@ -27,25 +28,25 @@ def schedule(previous: dict | None, recall: str, mastery: float | None) -> tuple
 
 
 def mastery(assessment: dict | None) -> float | None:
-    if not assessment:
+    """Share of concepts shown correct. Works on the legacy assessment and on analysis.technical."""
+    if not assessment or not assessment.get("concepts"):
         return None
     return sum(c["status"] == "correct" for c in assessment["concepts"]) / len(assessment["concepts"])
 
 
-def compare(first: dict, second: dict, prior: dict | None) -> dict:
-    a = {c["concept_id"]: c for c in (first.get("assessment") or {}).get("concepts", [])}
-    b = {c["concept_id"]: c for c in (second.get("assessment") or {}).get("concepts", [])}
-    return {
-        "available": bool(a and b),
-        "newly_demonstrated": [
-            k for k, c in b.items() if c["status"] == "correct" and a.get(k, {}).get("status") != "correct"
-        ]
-        if a
-        else [],
-        "corrected": [
-            k for k, c in b.items() if c["status"] == "correct" and a.get(k, {}).get("status") == "incorrect"
-        ],
-        "remaining": [k for k, c in b.items() if c["status"] != "correct"],
-        "prior_session": prior,
-        "note": "This comparison shows immediate learning. A future cold attempt provides evidence of retention.",
-    }
+def derived_recall(mastery: float | None) -> str:
+    """Recall inferred from attempt 2: the learner no longer rates themselves."""
+    if mastery is not None and mastery >= 0.8:
+        return "good"
+    if mastery is not None and mastery >= 0.5:
+        return "hard"
+    return "again"
+
+
+def concept_results(attempt: dict) -> dict | None:
+    """Per-concept results of a raw attempt row: the new technical pass, else the legacy assessment."""
+    analysis = json.loads(attempt["analysis"]) if attempt.get("analysis") else None
+    technical = (analysis or {}).get("technical")
+    if technical and technical.get("concepts"):
+        return technical
+    return json.loads(attempt["assessment"]) if attempt.get("assessment") else None

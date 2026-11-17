@@ -25,7 +25,7 @@ Without `uv`, use `python3 -m venv .venv` followed by `.venv/bin/python -m pip i
 
 Open **http://127.0.0.1:5173**. The API runs on **127.0.0.1:8765**. Ctrl-C stops both application servers.
 
-The dependency installation and model downloads need internet. Once installed, the runtime uses local assets and loopback services only. You can immediately record, replay, study reference lessons, and schedule reviews without models. Missing AI feedback is explicitly marked unavailable.
+The dependency installation and model downloads need internet. Once installed, the runtime uses local assets and loopback services only. Without models you can still record, replay, transcribe (if Whisper is running), see measurements and schedule attempt 2. Missing AI feedback is explicitly marked unavailable.
 
 Separate-terminal commands, if preferred:
 
@@ -55,9 +55,9 @@ Start Ollama if it is not already running:
 OLLAMA_NO_CLOUD=1 ollama serve
 ```
 
-The default is `qwen3.5:9b-q4_K_M`, tested on an 8 GB NVIDIA GPU. SpeakLab disables thinking for bounded JSON reviews, uses an 8K context, and runs Whisper on CPU to preserve GPU memory. The smaller Qwen3 8B remains configurable, but failed a structured claim-review case that Qwen3.5 handled correctly. These small calibration tests do not establish general factual reliability.
+The default is `qwen3.5:9b-q4_K_M`, tested on an 8 GB NVIDIA GPU. SpeakLab disables thinking for bounded JSON passes, uses an 8K context (4096 output tokens for the review writer, 2048 for the other passes), and runs Whisper on CPU to preserve GPU memory. The smaller Qwen3 8B remains configurable, but failed a structured claim-review case that Qwen3.5 handled correctly. These small calibration tests do not establish general factual reliability.
 
-In **Settings → Model for feedback & tutoring**, select an installed model and click **Use model**. **Refresh models** finds new downloads in the connected Ollama service. The choice persists in the database and overrides the initial `SPEAKLAB_OLLAMA_MODEL` default; no app restart is needed. Switching waits for active analysis/tutoring to finish. Existing feedback keeps its recorded model; use explicit reanalysis to assess it with another model. The picker does not download models or change Whisper. A local chat model may still fail structured assessment; retry or choose a tested model.
+In **Settings → Model for feedback & coaching**, select an installed model and click **Use model**. Five passes (technical review, communication review, review writer, chat and coach notes) each have their own model, context and output settings, which all start on that model. **Refresh models** finds new downloads in the connected Ollama service. The choices persist in the database and override the initial `SPEAKLAB_OLLAMA_MODEL` default; no app restart is needed. Changes wait for active analysis and coach replies to finish. Every saved pass result keeps the model that produced it. The picker does not download models or change Whisper. A small local model can still return invalid structured output; a failed pass shows an error with Retry and keeps the earlier passes.
 
 Only downloaded local models are supported. SpeakLab rejects cloud tags and models advertising remote routing, disables HTTP proxy inheritance and redirects, and accepts model URLs only on loopback. Also keep Ollama's cloud features disabled with `OLLAMA_NO_CLOUD=1` in the environment of the Ollama process. A GUI-managed Ollama process needs that setting applied to that process separately.
 
@@ -86,7 +86,7 @@ Open **Settings → Check local services**. Ollama readiness checks the configur
 
 ## Vocal foundations and variation
 
-In feedback, open **Communication & voice → Vocal variation** and choose Rate, Volume, Pitch & melody, Pauses or Tonality. The same explorer is available under each attempt in the comparison view. Playback markers jump to the measured passages.
+On the review page, open **Measurements → Voice measurements → Vocal variation** and choose Rate, Volume, Pitch & melody, Pauses or Tonality. Playback markers jump to the measured passages.
 
 - Rate compares full 30-second WPM estimates from timestamped transcripts. WPM includes pauses; distributing words across transcript segments can miss changes within a sentence. Manual transcripts cannot supply aligned pace variation.
 - Volume compares P10–P90 loudness spreads within full, usable 15-second active-audio windows. It does not compare calibrated speaking loudness, and the least varied window is not necessarily the quietest. Microphone movement, gain and processing affect the recording.
@@ -94,48 +94,52 @@ In feedback, open **Communication & voice → Vocal variation** and choose Rate,
 - Pauses show internal energy-gap locations, durations and a timeline. Leading/trailing silence is excluded from the internal-pause total, and these markers do not establish a word boundary or communicative purpose.
 - Tonality is a listening and intention exercise. The app does not infer emotions, confidence, charisma or audience engagement.
 
-Variation is descriptive, without an ideal range or a higher-is-better score. Only comparable full windows are included; missing data remains unavailable. The explorer reads existing stored measurements, so it does not require reanalysis, a model call or additional audio copies. Short/older recordings may not contain sufficient temporal data.
+Variation is descriptive, without an ideal range or a higher-is-better score. Only comparable full windows are included; missing data remains unavailable. The explorer reads existing stored measurements, so it does not require a model call or additional audio copies. Short/older recordings may not contain sufficient temporal data.
 
 ## Daily workflow
 
 1. **Pick a topic.** Expand **Practice settings** to change duration, prompt style or delivery intention. Use the weighted random suggestion or choose from 16 curated topics across eight categories and three levels. Choose 2–5 minutes, a prompt type, and an intended delivery style.
-2. **Explain from memory.** Record with the browser microphone. Pause/resume, stop early, listen, re-record before saving, or import WAV/WebM/Ogg/MP4 audio. The countdown excludes manually paused time. Reference material is unavailable until the cold recording is saved.
-3. **Reflect.** Audio is stored before analysis begins. Inspect separate technical and voice panels. Missing concepts are distinct from inaccurate claims. Each non-missing concept and transcript coaching point must quote actual transcript text. Edit transcription errors if necessary; edits clear the old assessment and timing alignment and rerun analysis.
-4. **Learn.** Read one curated section at a time, selected around first-attempt gaps. **Check your understanding** switches to a recall view with the notes hidden. **Ask your tutor** opens a separate drawer for questions and checking answers. The outline, objectives and references remain accessible; the outline collapses on narrow screens. Your current step, reviewed steps and reflection drafts are saved in this browser. A reviewed step records progress through the notes, not mastery. The tutor receives your first attempt, assessment, references, and recent conversation. Without an assessment, the UI explicitly uses a general curated path. Lesson timing is guidance, not a forced timer.
-5. **Explain again.** Notes disappear on the second recording screen. Compare coverage, corrected claims, delivery measurements, transcripts, and both recordings. Rate recall and save the review date.
+2. **Explain from memory (attempt 1).** Record with the browser microphone. Pause/resume, stop early, listen, re-record before saving, or import WAV/WebM/Ogg/MP4 audio. The countdown excludes manually paused time. Reference material is unavailable until the cold recording is saved.
+3. **Review and chat.** Audio is stored before analysis begins. The review page has the transcript, review and measurements on the left and the coach chat on the right. A small **How did that go?** box lets you write your own read of the attempt; send it or skip it (it counts as skipped after five minutes). The coach opens the chat with a written review that quotes your words, rewrites a few passages, shows how the time was spent and ends with a main focus. The Review tab keeps the fixed findings: scores out of 10 with a one-line reason each, three key points with time links, and your checklist for attempt 2. The Transcript tab shows one continuous text with filler words and pauses marked inline; time links in the coach's messages jump to and highlight the line. Edit transcription errors if necessary; edits clear the old analysis and rerun it. A recording with almost nothing in it gets no scores and a prompt to record again.
+4. **Learn by asking.** The chat is where you learn: ask for the senior-engineer answer, a simpler version, alternatives and trade-offs, or a text diagram, and explain an idea back to get feedback. The coach will not hand over a script to memorise. Long conversations are summarised for the model, but your review, transcript lines and coach notes always stay in full.
+5. **Explain again (attempt 2).** Attempt 2 opens the next calendar day, so it tests what you remember. Before recording you see only the topic, the prompt and your checklist; the attempt 1 review and chat stay closed. Attempt 2 gets its own review and chat that compare it with attempt 1. Saving that review completes the session automatically and schedules the next spaced review. There is no rating to enter.
 
-Sessions resume from the home screen or history. Raw audio is preserved. Processing runs in one background worker to avoid loading several analysis jobs at once; after a server interruption, recordings remain saved and interrupted jobs can be retried. The cold attempt cannot be overwritten after feedback is revealed. Completed sessions preserve their transcripts; retry can still recover missing analysis.
+Pending attempt 2s appear on the home screen and never expire. Sessions resume from the home screen or history. Raw audio is preserved. Processing runs in one background worker to avoid loading several analysis jobs at once; after a server interruption, recordings remain saved and interrupted jobs can be retried. The cold attempt cannot be overwritten after feedback is revealed (except a too-short one). If a pass fails, the transcript, measurements and earlier passes stay visible and Retry re-runs only the failed and later passes. Sessions recorded before the coach existed keep their old assessment summary and offer **Re-review this attempt**, which keeps the earlier analysis.
+
+### Coach notes
+
+The coach keeps short notes about you: the skills you are working on, recurring struggles, goals you have stated and how you like to be taught. Before each review a separate pass folds in the sessions and chats since the last update. The review is weighted toward your focus areas without ignoring everything else, and the notes never drop a focus area on their own. **Settings → What your coach remembers** shows the current notes (about 400 words at most), lets you edit them and restore any earlier version.
 
 ## What works
 
 | Area | Implemented behavior |
 | --- | --- |
-| Topic catalog | 16 original reference summaries, 68 reference concepts, sources, checks, 8 categories, 3 difficulties, 6 prompt types |
+| Topic catalog | 16 original reference summaries, 68 reference concepts, sources, 8 categories, 3 difficulties, 6 prompt types |
 | Recording | Browser MediaRecorder; real input activity; timer; pause/resume; playback; re-record before save; import; local download |
-| Storage | SQLite sessions/attempts/messages/reviews; original audio plus decoded analysis WAV; stable UUID filenames |
-| Transcription | whisper.cpp adapter; segments where supplied; manual correction; independent retry |
-| Technical assessment | Ollama JSON schema; Pydantic validation; exact concept-set and excerpt checks; one repair retry; transparent four-state rubric |
+| Storage | SQLite sessions/attempts/messages/reviews/coach notes; original audio plus decoded analysis WAV; stable UUID filenames |
+| Transcription | whisper.cpp adapter; segments and word timing where supplied; manual correction; independent retry |
+| Review pipeline | Separate technical, communication and writer passes on local models; each pass saved as it finishes with its model; retry from the failed pass; validated line IDs; no model-written quotes or times |
+| Review page | Transcript with inline fillers and pauses, fixed review (scores, key points, attempt 2 checklist), measurements, streamed coach chat with time links |
 | Audio | Relative loudness, P10–P90 spread, energy-based activity and internal pauses, extended silence, Praat pitch contour and spread |
 | Transcript metrics | WPM, limited filler-phrase counts, approximate 30-second speaking-rate windows when timestamps exist |
-| Coaching | Clearly labeled tentative suggestions from measurements and transcript evidence; no confidence/emotion scoring |
-| Learning | Gap-focused curated sections, reflection fields, optional checks, grounded local conversational tutor with persisted dialogue |
-| Comparison | Concept-by-concept before/after, corrected inaccuracies, missing concepts, metric comparison, both audio files and transcripts |
-| Retention | Review dates, weighted recommendations, history, previous post-study coverage versus the next cold attempt on a later day |
+| Coach notes | Memory pass with versioned, editable notes |
+| Attempt 2 | Opens the next calendar day; checklist-only preview; review compares with attempt 1; completes the session |
+| Retention | Review dates derived from attempt 2's technical results, weighted recommendations, history |
 | UI | Responsive layouts, light/dark mode, labeled controls, keyboard focus, reduced-motion support, meaningful unavailable/loading states |
 
 The 68 concept count includes eight neural-network concepts; other topics have four. Reference content is original concise teaching material with links to supporting documentation, not downloaded at runtime.
 
 ## Measurements and rubric
 
-- **Concepts:** correct = accurately demonstrated, partial = incomplete explanation, missing = absent, incorrect = an explicit inaccurate statement. Counts are displayed; there is no invented precision score. A verbatim excerpt proves the words were said, not that the model's interpretation is correct. Scope and audience remain judgment calls.
+- **Scores:** out of 10 in half steps with a one-line reason, labelled coaching estimates, not measurements. Overall, Clarity, Structure, Conciseness, Technical accuracy, Technical coverage and Handling uncertainty, plus optional scores for a current focus area. Accuracy (what was said) and coverage (what was not reached) are separate, so an omission is not treated as an error. A verbatim quote proves the words were said, not that the model's interpretation is correct. Technical points are labelled as in the topic reference or the model's own knowledge.
 - **Rate:** transcript word count / recording duration in minutes, including pauses. Segment rates distribute segment word counts across overlapping 30-second windows and are approximate. Manual transcript edits clear segment timing, so segment-rate charts become unavailable.
-- **Fillers:** case-insensitive `um`, `uh`, `erm`, `er`, `you know`, `I mean` matches. Context matters; transcription can remove disfluencies. Ambiguous `like` is intentionally excluded. Counts are not a quality grade.
+- **Fillers:** `um`, `uh`, `erm` and `er` are counted as fillers; `you know` and `I mean` are marked lighter as possible fillers because they are sometimes meant. Ambiguous `like`, `so`, `actually` and similar words are not counted. Transcription can remove disfluencies. Counts are not a quality grade.
 - **Activity and pauses:** 30 ms RMS windows with 10 ms hops; an adaptive energy threshold; short gaps bridged. Internal low-energy gaps ≥0.3s count as pauses. Low-energy runs ≥2s also appear as extended silences, including the recording edges. This is not a learned speech detector: background noise and soft speech affect it.
 - **Loudness:** RMS in relative dBFS and active-frame P10–P90 spread. This is not calibrated physical loudness. Microphone placement, room noise, browser processing, and gain confound comparisons.
 - **Pitch:** Praat autocorrelation over 60–500 Hz; median and P10–P90 range in semitones. Unvoiced regions are gaps. Out-of-range voices, creak, noise, and octave errors can distort results. Pitch failure leaves other measurements usable.
-- **Coaching:** listening exercises and style-dependent suggestions are tentative. Faster, louder, or more variable is never automatically scored as better. Articulation, vocal archetypes, tonality, narrative quality, and audience engagement are not reliably established by these measurements.
+- **Delivery:** the coach receives a short written voice summary, not the raw arrays, and leads with voice only when a focus area is vocal. Suggestions are tentative. Faster, louder, or more variable is never automatically scored as better. Articulation, vocal archetypes, tonality, narrative quality, and audience engagement are not reliably established by these measurements.
 
-Review intervals start at 1 / 2 / 3 / 7 days for again / hard / good / easy. Repeated successful reviews expand the interval, capped at 90 days. Less than 50% fully demonstrated reference concepts caps the rating at again; less than 80% caps easy at hard. This is a deliberately simple heuristic, not a validated mastery estimate. When assessment is unavailable, only your self-rating is used. Retrying analysis after completion does not retroactively reschedule that review. Same-day repeats are not presented as long-term retention.
+Review intervals start at 1 / 2 / 3 / 7 days for again / hard / good / easy. They are derived from the share of reference concepts attempt 2 fully demonstrated in the technical pass; there is no manual rating. Repeated successful reviews expand the interval, capped at 90 days. Less than 50% fully demonstrated caps the result at again; less than 80% caps easy at hard. This is a deliberately simple heuristic, not a validated mastery estimate. Attempt 2 counts as the topic's first review. Incomplete sessions do not count toward weak-topic recommendations.
 
 ## Configuration and data
 
@@ -147,8 +151,8 @@ Copy `.env.example` to `.env` at the project root. Configuration is read at back
 | `SPEAKLAB_OLLAMA_URL` | `http://127.0.0.1:11434` |
 | `SPEAKLAB_OLLAMA_MODEL` | `qwen3.5:9b-q4_K_M` |
 | `SPEAKLAB_WHISPER_URL` | `http://127.0.0.1:8080` |
-| `SPEAKLAB_OLLAMA_CONTEXT` | `8192` tokens |
-| `SPEAKLAB_OLLAMA_MAX_OUTPUT` | `2048` tokens |
+| `SPEAKLAB_OLLAMA_CONTEXT` | `8192` tokens, the default for every pass |
+| `SPEAKLAB_OLLAMA_MAX_OUTPUT` | `2048` tokens, the default for every pass except the review writer (`4096`) |
 | `SPEAKLAB_SERVE_FRONTEND` | `false`; set true after building `frontend/dist` |
 | `SPEAKLAB_SERVER_NAME` | `This computer`; the name shown in Settings |
 | `SPEAKLAB_MODEL_TIMEOUT` | `180` seconds per model call; one repair call may follow |
@@ -156,7 +160,7 @@ Copy `.env.example` to `.env` at the project root. Configuration is read at back
 
 The frontend proxy defaults to `http://127.0.0.1:8765`; set `SPEAKLAB_API_TARGET` when launching Vite if you change the backend port. Browser origins are explicitly allowed for local application/test ports. Use `localhost` or `127.0.0.1`, not a LAN IP.
 
-`data/speaklab.sqlite3` contains structured data and `data/recordings/` contains audio. SQLite schema version 3 migrates older versions in place: version 2 added transcription metadata and `analysis_history`; version 3 adds `app_settings` for the selected local model. Newer unknown schema versions fail explicitly. Reanalysis archives the previous public attempt snapshot before updating derived results. Original audio and review dates are preserved; manually edited transcripts cannot be automatically replaced. To back up, stop the backend and copy the entire data directory, including any SQLite sidecar files. Moving a backup to another machine currently requires updating the absolute recording paths in SQLite. Browser-local theme, current lesson step, reviewed steps and reflection drafts live in localStorage; tutor messages submitted successfully are stored in SQLite.
+`data/speaklab.sqlite3` contains structured data and `data/recordings/` contains audio. SQLite schema migrations run in place and newer unknown schema versions fail explicitly. `analysis_history` archives earlier analysis snapshots when an attempt is re-reviewed; `app_settings` stores the selected models and per-pass settings; coach notes keep every version. Original audio and review dates are preserved. To back up, stop the backend and copy the entire data directory, including any SQLite sidecar files. Moving a backup to another machine currently requires updating the absolute recording paths in SQLite. Browser-local state is limited to the theme; chat messages are stored in SQLite.
 
 No telemetry, external fonts, model SDK callbacks, or remote assets are loaded by the app. Opening a source link is an explicit navigation to that external site. Data is not encrypted by the application; use your operating system's disk protection and normal backups. Audio filenames ignore supplied filenames, containers are checked by signature and decoder, input is bounded to 30 MiB / six minutes, and FFmpeg receives only local generated paths without a shell. Recordings shorter than 0.5 seconds are rejected.
 
@@ -176,9 +180,9 @@ npx playwright install chromium
 npm test
 ```
 
-Browser tests start dedicated services on 8766 and 5174, use `data/e2e`, and intentionally point model adapters at an unavailable loopback port. They exercise the actual API and DSP, browser recording with Chromium's fake microphone, denial recovery, uploads, manual transcription, lessons, unavailable tutoring, comparison, history, reload persistence, mobile layout, and theme. Synthetic audio and test responses exist only in test/diagnostic code. Browser tests never reuse a running normal server. Test data is separate from practice data.
+Browser tests start dedicated services on 8766 and 5174, use `data/e2e`, and intentionally point model adapters at an unavailable loopback port. They exercise the actual API and DSP, browser recording with Chromium's fake microphone, denial recovery, uploads, manual transcription, the review page and coach chat with their unavailable states, attempt 2 timing, history, reload persistence, mobile layout, and theme. Synthetic audio and test responses exist only in test/diagnostic code. Browser tests never reuse a running normal server. Test data is separate from practice data.
 
-Backend tests cover structured-output repair, topic-specific concept schemas, transcript evidence selection and resolution, aggregated quote validation errors, invalid excerpts, local-only service configuration, blocked remote Ollama models, transcript invalidation, known-frequency pitch and known-duration pauses, silent audio, upload rejection/cleanup, lesson gating, interrupted jobs, review scheduling, and retention comparison.
+Backend tests cover structured-output repair, topic-specific concept schemas, per-pass model settings, line-ID and marker resolution, aggregated validation errors, partial failures and retry, chat context budgeting, coach notes, attempt 2 timing, local-only service configuration, blocked remote Ollama models, transcript invalidation, known-frequency pitch and known-duration pauses, silent audio, upload rejection/cleanup, interrupted jobs, and review scheduling.
 
 OpenAPI is available at `http://127.0.0.1:8765/docs`. Frontend domain contracts live in `frontend/src/types.ts` and the model picker component; incoming requests and model output contracts live in `backend/app/schemas.py`. Runtime logs are JSON events containing route templates and processing identifiers; transcripts and audio are not logged.
 
@@ -186,19 +190,30 @@ OpenAPI is available at `http://127.0.0.1:8765/docs`. Frontend domain contracts 
 backend/app/
   main.py          API routes and local request boundary
   db.py            SQLite schema and persistence helpers
-  curriculum.py    Safe public catalog, prompts, lessons, recommendations
-  topics.json      Curated concepts, examples, checks, and sources
+  curriculum.py    Safe public catalog, prompts, recommendations
+  topics.json      Curated concepts, examples and sources (the reference that grounds the passes)
   audio.py         Decode, DSP, transcript metrics, delivery exercises
-  models.py        Loopback whisper/Ollama adapters and output validation
+  models.py        Loopback whisper/Ollama adapters
+  llm.py           Per-pass model settings, context budget, structured and streaming calls
+  coach.py         Technical, communication, review structure and review message passes
+  chat.py          Coach chat context, summaries and streaming replies
+  memory.py        Versioned coach notes and the memory pass
+  markers.py       Resolves [[L7]] / [[L7:"words"]] markers against stored lines
+  transcript.py    Transcript lines, inline filler and pause tokens, stats
+  voice.py         Plain-sentence voice summary for the passes
   pipeline.py      Durable attempt states and serialized background processing
-  progress.py      Review intervals and comparison logic
-  schemas.py       Pydantic request and inference contracts
+  progress.py      Review intervals and mastery from attempt 2
+  schemas.py       Pydantic request and pass-output contracts
 frontend/src/
   App.tsx          Navigation, home, topic library, history, settings
   Recorder.tsx     Browser audio lifecycle and recording workspace
-  Practice.tsx     Feedback and comparison
-  Learning.tsx     Focused lesson steps, recall, tutor drawer
-  Today.tsx        Practice starting point and review summary
+  ReviewPage.tsx   Review page: tabs, note box, chat, mobile sheet
+  ReviewTab.tsx    Scores, key points, attempt 2 checklist
+  TranscriptTab.tsx Inline fillers and pauses, line highlight
+  CoachChat.tsx    Streamed coach chat with time links
+  CoachNotes.tsx   View, edit and restore coach notes
+  Practice.tsx     Acoustic panel and attempt status
+  Today.tsx        Practice starting point, due attempt 2s and review summary
   components.tsx   Shared UI and measurement charts
   types.ts         Typed API/domain contracts
 scripts/dev.py     Local development launcher
@@ -206,14 +221,14 @@ scripts/dev.py     Local development launcher
 
 ## Current limits and next steps
 
-- Real Qwen/Whisper inference has passed a complete synthetic-speech integration run on a Windows/WSL host, including both attempts and tutoring. The original Qwen3/base.en warm-model samples took about 16–18 seconds to process; the newer detailed review adds a model pass and uses small.en. This verifies integration, not assessment accuracy on arbitrary speech. Natural speech, more topics, and standalone Apple Silicon performance still need calibration.
+- Real Qwen/Whisper inference has passed a complete synthetic-speech integration run on a Windows/WSL host, including both attempts. That run predates the coach pipeline; its separate passes and chat have not yet been timed on the host (see `scripts/smoke-inference.py`). Passing integration does not establish review quality on arbitrary speech. Natural speech, more topics, and standalone Apple Silicon performance still need calibration.
 - Technical judgments can be wrong even with valid JSON and genuine excerpts. The curated reference is the baseline; especially for audience-specific prompts, review whether omitted concepts were actually essential.
-- The 18-minute lesson is a guided reading, retrieval, and conversation path. It is not a guarantee of 18 minutes of generated content. Initial sections are deterministic curated text selected by gaps; the tutor supplies interactive adaptation when available.
+- The coach reviews each attempt in several local passes, so a review takes longer than a single call (the design target is one to two minutes). Prompt quality on real attempts is still being tuned.
 - Pause detection is energy-based, pitch is an estimate, and filler detection is transcript-based. There is no emotion, confidence, charisma, video, or reliable automatic articulation scoring. Vocal archetypes are treated as delivery intentions, not classified identities.
-- Review scheduling and longitudinal tracking are a basic foundation. History shows per-session measurements and later cold-attempt recall; advanced trend charts, calibrated mastery, and more adaptive scheduling remain future work.
+- Review scheduling and longitudinal tracking are a basic foundation. History shows per-session measurements; advanced trend charts, calibrated mastery, and more adaptive scheduling remain future work.
 - Audio is saved to disk when you choose Save. Until then it is held in the browser; closing the page can lose it. The UI warns on normal navigation and provides a download fallback after an upload failure. There is no IndexedDB crash recovery or offline-service-worker installation.
 - Browser imports can include video containers, but only the first audio stream is analyzed. No video is recorded or evaluated.
-- Single user and one backend process only. Jobs run serially in memory and become retryable after restart. There is no cancellation UI, streaming tutor text, deletion/export interface, or multi-device synchronization. Backups are manual; `scripts/backup-data.sh` provides a verified-archive workflow for a [deployed host](docs/deployment.md#how-to-back-up-and-restore-practice-data).
+- Single user and one backend process only. Jobs run serially in memory and become retryable after restart. There is no cancellation UI, deletion/export interface, or multi-device synchronization. Backups are manual; `scripts/backup-data.sh` provides a verified-archive workflow for a [deployed host](docs/deployment.md#how-to-back-up-and-restore-practice-data).
 - Mic behavior has automated Chromium coverage and saved natural desktop-browser recordings; Safari/Firefox still need hands-on verification. Keep consistent mic placement and permissions when comparing recordings.
 
 Useful next work: hands-on speech calibration, unattended Windows reboot verification, scheduled backups, broader topic depth, adaptive study checks, a proper local speech activity detector, accessibility auditing with assistive technology, and retention trends across several weeks of real practice.
@@ -221,14 +236,15 @@ Useful next work: hands-on speech calibration, unattended Windows reboot verific
 
 ## Feedback details
 
-- **Transcripts:** local Whisper receives a disfluent example prompt with non-speech suppression off. The original recognized text is retained. Verbatim-oriented does not mean guaranteed verbatim: omissions and hallucinations remain possible. Estimated token/word timestamps and segment-start fallbacks are labeled. Measured audio pauses appear in the annotated timeline, including pauses inside speech segments, without pretending to know an exact word boundary.
-- **Fillers:** um/uh/erm/hmm variants are counted and ranked, with counts per minute and playback links. “Like,” “you know,” “I mean,” “so,” “actually,” “basically,” and “right” are context-dependent candidates and excluded from that total. Exact repeated words are shown separately; intentional emphasis is not automatically penalized.
-- **Factual accuracy:** a second bounded local-model pass reviews up to four important claims against curated references. Supported, incorrect, needs qualification, and unverified are distinct. Original evidence and reference text are resolved from constrained IDs; no model-generated source links are accepted. Missing concepts remain separate from false claims. Proposed corrections get a second review by the same model to check for false alarms; this is not independent verification. If that review fails, the claim is marked unverified. A failed extra review does not discard the core assessment. Correct quotations do not guarantee correct interpretation.
+- **Transcripts:** local Whisper receives a disfluent example prompt with non-speech suppression off. The original recognized text is retained. Verbatim-oriented does not mean guaranteed verbatim: omissions and hallucinations remain possible. Word timing is used when the server supplies it, with segment-start fallbacks. Measured audio pauses appear inline, including pauses inside speech segments, without pretending to know an exact word boundary.
+- **Fillers:** um/uh/erm variants are counted, with counts per minute. "You know" and "I mean" are shown as possible fillers. "Like," "so," "actually," "basically" and "right" are context-dependent and not counted as definite fillers. Exact repeated words are shown separately; intentional emphasis is not automatically penalized.
+- **Technical review:** one pass compares the transcript with the curated topic reference and the model's own knowledge. Points are labelled as in the reference or not. Missing concepts remain separate from false claims. A correction the pass proposes gets a second bounded check and shows as unverified if it fails. This is not independent verification.
+- **Communication review:** one pass finds sections, strengths, problems and rewrites, and says whether a weak section looks like a knowledge gap or a communication gap. A rewrite is the coach's own wording; check it yourself.
+- **Evidence:** the models cite transcript lines by ID. The app inserts the learner's words and line times itself, so a quote or time that was not in the recording cannot appear.
 - **Vocal foundations:** five practice cards explain rate, relative volume, pitch/melody, pauses, and intended tonality. Fifteen-second audio windows identify passages to replay; pitch is only compared with enough voiced samples. No universal variation targets, emotion detection, facial-expression inference, or charisma scores. Rate windows are estimates; noise, mic gain and automatic processing limit comparisons.
-- **Vocabulary:** up to three contextual phrase alternatives include meaning, rationale and practice. Suggestions for claims marked incorrect, qualified or unverified are withheld so factual errors are not reinforced. Review alternatives yourself; an LLM can still propose unnecessary or imperfect wording.
 - **Reading level:** optional approximate Flesch–Kincaid US grade band; minimum 100 words and three punctuated sentences. The displayed formula uses heuristic syllable counting on a separate copy with detected hesitations removed. It is not a vocabulary/ability score or a target to maximize. Speech fragments, jargon and ASR punctuation can distort it.
-- **Learning paths:** all 16 topics include brief background, per-concept prerequisite bridges, and a concise engineering-practice paragraph with curated source links. Existing section counts are unchanged; no extra lesson per acronym. Content is dated for later review and is available offline.
+- **Topic reference:** all 16 topics include brief background, per-concept prerequisite bridges, and a concise engineering-practice paragraph with curated source links. It grounds the review and chat and is available offline.
 
-Open **Reanalyze & previous versions** in feedback or comparison to upgrade an old recording. Retranscription is optional; earlier text and feedback remain accessible there. Processing can take longer because factual/vocabulary review is a separate request. A completed session’s review schedule is not recalculated.
+Re-reviewing a saved attempt runs the current pipeline again and keeps the earlier analysis. A completed session's review schedule is not recalculated.
 
 Validation includes explicit test doubles for malformed evidence and model failures, database upgrade and snapshot preservation, synthetic pitch/pause audio, mobile/browser playback and disclosures, and a separate real-inference calibration on a deployed host. Test data is never inserted into practice history.

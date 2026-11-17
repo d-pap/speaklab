@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 // Explicit test measurements and synthetic audio; never used in production analysis.
 function silentWav(seconds: number) {
@@ -49,6 +49,45 @@ const metrics = {
   pause_count: 2,
   pause_seconds: 2.5,
 };
+// Range-aware audio, so playback markers can seek.
+async function serveRangedAudio(page: Page, seconds: number) {
+  const recording = silentWav(seconds);
+  await page.route("**/vocal-test.wav", (route) => {
+    const range = route
+      .request()
+      .headers()
+      ["range"]?.match(/^bytes=(\d+)-(\d*)$/);
+    if (!range)
+      return route.fulfill({
+        contentType: "audio/wav",
+        headers: { "accept-ranges": "bytes" },
+        body: recording,
+      });
+    const start = Number(range[1]);
+    const end = range[2]
+      ? Math.min(Number(range[2]), recording.length - 1)
+      : recording.length - 1;
+    return route.fulfill({
+      status: 206,
+      contentType: "audio/wav",
+      headers: {
+        "accept-ranges": "bytes",
+        "content-range": `bytes ${start}-${end}/${recording.length}`,
+      },
+      body: recording.subarray(start, end + 1),
+    });
+  });
+}
+async function openMeasurements(page: Page) {
+  await page.getByRole("tab", { name: "Measurements" }).click();
+  const details = page.locator("details.measurements");
+  if (!(await details.evaluate((d: HTMLDetailsElement) => d.open)))
+    await page
+      .getByText("Voice measurements (pace, pitch, volume, pauses)", {
+        exact: true,
+      })
+      .click();
+}
 const makeSession = (acoustics: object, transcriptSource = "whisper") => ({
   id: "vocal-test",
   topic_id: "auth",
@@ -58,7 +97,7 @@ const makeSession = (acoustics: object, transcriptSource = "whisper") => ({
   style: "Conversational",
   prompt_kind: "Concept explanation",
   prompt: "Explain the difference.",
-  stage: "feedback",
+  stage: "review1",
   completed_at: null,
   messages: [],
   attempts: [
@@ -86,33 +125,9 @@ test("vocal foundations show temporal contrast, exclude short trailing fragments
   await page.route("**/api/sessions/vocal-test", (route) =>
     route.fulfill({ json: makeSession(metrics) }),
   );
-  const recording = silentWav(125);
-  await page.route("**/vocal-test.wav", (route) => {
-    const range = route
-      .request()
-      .headers()
-      ["range"]?.match(/^bytes=(\d+)-(\d*)$/);
-    if (!range)
-      return route.fulfill({
-        contentType: "audio/wav",
-        headers: { "accept-ranges": "bytes" },
-        body: recording,
-      });
-    const start = Number(range[1]);
-    const end = range[2]
-      ? Math.min(Number(range[2]), recording.length - 1)
-      : recording.length - 1;
-    return route.fulfill({
-      status: 206,
-      contentType: "audio/wav",
-      headers: {
-        "accept-ranges": "bytes",
-        "content-range": `bytes ${start}-${end}/${recording.length}`,
-      },
-      body: recording.subarray(start, end + 1),
-    });
-  });
+  await serveRangedAudio(page, 125);
   await page.goto("/#/session/vocal-test");
+  await openMeasurements(page);
   const view = page.getByRole("region", {
     name: "Vocal variation for attempt 1",
   });
@@ -161,6 +176,8 @@ test("vocal foundations show temporal contrast, exclude short trailing fragments
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
     .toBeLessThanOrEqual(320);
+  // Under 900px the tabs live in a sheet; the open tab and details are kept.
+  await page.getByRole("button", { name: "Transcript & review" }).click();
   await view
     .getByRole("button", { name: "Pitch & melody", exact: true })
     .click();
@@ -201,6 +218,7 @@ test("unaligned transcripts and missing pitch never produce a fabricated variati
     route.fulfill({ contentType: "audio/wav", body: silentWav(1) }),
   );
   await page.goto("/#/session/vocal-test");
+  await openMeasurements(page);
   const view = page.getByRole("region", {
     name: "Vocal variation for attempt 1",
   });
@@ -220,4 +238,96 @@ test("unaligned transcripts and missing pitch never produce a fabricated variati
   await expect(
     view.getByText(/does not establish uninterrupted speech/),
   ).toBeVisible();
+});
+
+test("measurements keep filler detail, vocal foundations and reading level, collapsed", async ({
+  page,
+}) => {
+  await page.route("**/api/sessions/vocal-test", (route) =>
+    route.fulfill({
+      json: makeSession({
+        ...metrics,
+        filler_count: 1,
+        fillers: { um: 1 },
+        fillers_per_minute: 20,
+        filler_candidates: { like: 1 },
+        filler_events: [
+          {
+            term: "um",
+            text: "Um",
+            kind: "hesitation",
+            start: 2.2,
+            timing: "estimated-word",
+            char_start: 0,
+            char_end: 2,
+          },
+        ],
+        repetitions: [{ text: "the token", char_start: 5, char_end: 14 }],
+        vocal_foundations: [
+          {
+            foundation: "Pitch & melody",
+            observation: "Measured spread: 2 semitones.",
+            practice: "Try emphasizing a different word.",
+            start: 3,
+            basis: "Test fixture",
+          },
+        ],
+        readability: {
+          available: false,
+          words: 5,
+          sentences: 1,
+          reason: "Needs at least 100 words.",
+          limitation: "Experimental text readability.",
+          method: "Test fixture",
+          basis: "Original unchanged.",
+          repeated_words: [],
+        },
+      }),
+    }),
+  );
+  await serveRangedAudio(page, 10);
+  await page.goto("/#/session/vocal-test");
+  await page.getByRole("tab", { name: "Measurements" }).click();
+  // Everything starts collapsed.
+  await expect(page.getByText("Measured spread: 2 semitones.")).toBeHidden();
+  await expect(
+    page.getByText(/Excluded from the hesitation total/),
+  ).toBeHidden();
+  await expect(page.getByText("Needs at least 100 words.")).toBeHidden();
+  await page
+    .getByText("Filler words, possible fillers & repetitions", { exact: true })
+    .click();
+  await expect(
+    page.getByText(/Excluded from the hesitation total/),
+  ).toBeVisible();
+  await expect(page.getByText(/Repeated phrases: “the token”/)).toBeVisible();
+  await page.getByRole("button", { name: "0:02 · Hear “Um”" }).click();
+  await expect
+    .poll(() =>
+      page
+        .getByLabel("Listen to filler words in attempt 1")
+        .evaluate((a: HTMLAudioElement) => a.currentTime),
+    )
+    .toBeGreaterThan(1.8);
+  await page
+    .getByText("Vocal foundations · five ways to practice", { exact: true })
+    .click();
+  await expect(page.getByText("Measured spread: 2 semitones.")).toBeVisible();
+  await expect(
+    page.getByText("Try emphasizing a different word."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "0:03 · Listen here" }).click();
+  await expect
+    .poll(() =>
+      page
+        .getByLabel("Listen to vocal foundations in attempt 1")
+        .evaluate((a: HTMLAudioElement) => a.currentTime),
+    )
+    .toBeGreaterThan(2.6);
+  await page
+    .getByText("Optional reading-level estimate · experimental", {
+      exact: true,
+    })
+    .click();
+  await expect(page.getByText("Needs at least 100 words.")).toBeVisible();
 });
