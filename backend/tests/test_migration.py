@@ -99,6 +99,26 @@ def test_v3_database_migrates_stages_and_columns(data_dir):
     assert after["s3"] is None
 
 
+def test_pre_redesign_database_already_marked_v4_is_still_upgraded(data_dir):
+    # An earlier branch marked old-format databases user_version 4 and added its own tables.
+    make_v3(data_dir)
+    conn = sqlite3.connect(data_dir / "speaklab.sqlite3")
+    conn.execute("CREATE TABLE learning_sessions (id TEXT PRIMARY KEY, data TEXT)")
+    conn.execute("INSERT INTO learning_sessions VALUES ('l1', '{}')")
+    conn.execute("PRAGMA user_version=4")
+    conn.commit()
+    conn.close()
+    db.initialize()
+    stages = {r["id"]: r["stage"] for r in db.all_rows("SELECT id, stage FROM sessions")}
+    assert stages == {"s1": "review1", "s2": "review1", "s3": "review2"}
+    assert db.one("SELECT note_state FROM attempts WHERE id='a1'")["note_state"] == "legacy"
+    assert db.one("SELECT note_state FROM attempts WHERE id='a2'")["note_state"] == "skipped"
+    after = {r["id"]: r["attempt2_after"] for r in db.all_rows("SELECT id, attempt2_after FROM sessions")}
+    assert after["s1"] == after["s2"] == "2026-10-05"
+    # Unknown tables from the earlier branch are left alone.
+    assert db.one("SELECT data FROM learning_sessions WHERE id='l1'")["data"] == "{}"
+
+
 def test_migration_is_idempotent(data_dir):
     make_v3(data_dir)
     db.initialize()

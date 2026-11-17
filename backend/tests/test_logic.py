@@ -21,7 +21,7 @@ class Reply(BaseModel):
 
 def test_catalog_has_unique_grounded_concepts_and_all_categories():
     assert len({t["id"] for t in TOPICS}) == len(TOPICS)
-    assert len({t["category"] for t in TOPICS}) == 8
+    assert len({t["category"] for t in TOPICS}) == 12
     assert {t["difficulty"] for t in TOPICS} == {"beginner", "intermediate", "advanced"}
     for topic in TOPICS:
         assert len({c["id"] for c in topic["concepts"]}) == len(topic["concepts"])

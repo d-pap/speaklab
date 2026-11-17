@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import coach, db, memory, models, progress, transcript, voice
 from .audio import acoustic_features, delivery_suggestions, transcript_metrics
-from .curriculum import CATALOG, prompt
+from .curriculum import prompt, topic_for
 from .speech import speech_observations, vocal_foundations
 
 log = logging.getLogger("speaklab.pipeline")
@@ -222,7 +222,7 @@ def _analyse(attempt: dict, session: dict, metrics: dict | None, text: str, segm
         _save(attempt_id, analysis)
         return analysis
 
-    topic = CATALOG[session["topic_id"]]
+    topic = topic_for(session["topic_id"])
     question = prompt(topic, session["prompt_kind"])
 
     def run_memory():

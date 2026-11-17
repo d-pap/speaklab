@@ -15,7 +15,7 @@ import re
 from collections.abc import Iterator
 
 from . import db, llm, markers, memory, models, pipeline
-from .curriculum import CATALOG, prompt
+from .curriculum import prompt, topic_for
 
 log = logging.getLogger("speaklab.chat")
 
@@ -176,7 +176,7 @@ def review_message(attempt: dict) -> str | None:
 
 
 def _context(session: dict, attempt: dict, left_out: set[str]) -> str:
-    topic = CATALOG[session["topic_id"]]
+    topic = topic_for(session["topic_id"])
     analysis = _json(attempt.get("analysis")) or {}
     lines = _json(attempt.get("lines")) or []
     notes = memory.current_notes()["content"].strip()

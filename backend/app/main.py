@@ -15,7 +15,7 @@ from starlette.staticfiles import StaticFiles
 from . import chat, db, llm, markers, memory, models, pipeline, progress
 from .audio import decode, detect_container
 from .config import ROOT, settings
-from .curriculum import CATALOG, TOPICS, prompt, public_topic, recommend
+from .curriculum import CATALOG, TOPICS, prompt, public_topic, recommend, topic_for
 from .schemas import (
     ChatInput,
     CoachNotesEdit,
@@ -235,7 +235,7 @@ def create_session(body: SessionCreate):
 def history():
     rows = db.all_rows("SELECT * FROM sessions ORDER BY created_at DESC LIMIT 200")
     for row in rows:
-        row["topic"] = public_topic(CATALOG[row["topic_id"]])
+        row["topic"] = public_topic(topic_for(row["topic_id"]))
         attempts = db.all_rows(
             "SELECT number, assessment, analysis, acoustics FROM attempts WHERE session_id=? ORDER BY number",
             (row["id"],),
@@ -249,7 +249,7 @@ def history():
                 {
                     "attempt": attempt["number"],
                     "correct": sum(c["status"] == "correct" for c in a["concepts"]) if a else None,
-                    "total": len(CATALOG[row["topic_id"]]["concepts"]),
+                    "total": len(topic_for(row["topic_id"])["concepts"]),
                     "wpm": m.get("wpm"),
                     "pitch_range_semitones": m.get("pitch_range_semitones"),
                     "filler_count": m.get("filler_count"),
@@ -267,7 +267,7 @@ def reviews():
         ") ORDER BY due"
     )
     return [
-        {**r, "topic": public_topic(CATALOG[r["topic_id"]]), "overdue": r["due"] <= date.today().isoformat()}
+        {**r, "topic": public_topic(topic_for(r["topic_id"])), "overdue": r["due"] <= date.today().isoformat()}
         for r in rows
     ]
 
@@ -283,7 +283,7 @@ def attempt2_queue():
     return [
         {
             "session_id": r["id"],
-            "topic": public_topic(CATALOG[r["topic_id"]]),
+            "topic": public_topic(topic_for(r["topic_id"])),
             "attempt2_after": r["attempt2_after"],
             "available": not r["attempt2_after"] or r["attempt2_after"] <= today,
         }
@@ -295,7 +295,7 @@ def attempt2_queue():
 def session_detail(session_id: str):
     session = get_session(session_id)
     pipeline.sweep_note_deadlines()
-    topic = CATALOG[session["topic_id"]]
+    topic = topic_for(session["topic_id"])
     session["topic"] = public_topic(topic)
     session["prompt"] = prompt(topic, session["prompt_kind"])
     session["attempts"] = [

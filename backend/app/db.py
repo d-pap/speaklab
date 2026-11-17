@@ -80,6 +80,12 @@ def initialize():
               folded_attempt_ids TEXT NOT NULL DEFAULT '[]'
             )"""
         )
+        # A database is upgrading to the coach pipeline when it lacks the note_state column.
+        # Some pre-redesign databases were already marked user_version 4 by an earlier
+        # branch, so the version number alone cannot decide whether to backfill.
+        upgrading = version < 4 or not any(
+            row[1] == "note_state" for row in db.execute("PRAGMA table_info(attempts)")
+        )
         _add_columns(
             db,
             "attempts",
@@ -106,15 +112,15 @@ def initialize():
         _add_columns(db, "sessions", {"attempt2_after": "TEXT"})
         _add_columns(db, "coach_notes", {"model": "TEXT"})  # the memory pass's model; NULL for edits
         has_assessment = any(row[1] == "assessment" for row in db.execute("PRAGMA table_info(attempts)"))
-        if version < 4 and has_assessment:
+        if upgrading and has_assessment:
             db.execute("UPDATE attempts SET note_state='legacy' WHERE assessment IS NOT NULL")
             # No legacy review and no new one either: no note box to wait on.
             db.execute("UPDATE attempts SET note_state='skipped' WHERE assessment IS NULL")
         # Sessions left in the old feedback/learn stages keep attempt 2 open: date of creation.
         db.execute(
             "UPDATE sessions SET attempt2_after=substr(created_at,1,10) "
-            "WHERE attempt2_after IS NULL AND (stage IN ('feedback','learn') OR (stage='review1' AND ?<4))",
-            (version,),
+            "WHERE attempt2_after IS NULL AND (stage IN ('feedback','learn') OR (stage='review1' AND ?))",
+            (int(upgrading),),
         )
         db.execute("UPDATE sessions SET stage='review1' WHERE stage IN ('feedback','learn')")
         db.execute("UPDATE sessions SET stage='review2' WHERE stage='compare'")

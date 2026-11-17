@@ -154,3 +154,24 @@ def test_processing_retry_guard_and_restart_recovery(client, wav_bytes, monkeypa
     attempt = client.get(f"/api/sessions/{session['id']}").json()["attempts"][0]
     assert attempt["status"] == "interrupted"
     assert "interrupted" in attempt["errors"]["processing"]
+
+
+def test_sessions_with_retired_topic_or_prompt_kind_still_load(client):
+    # Saved sessions outlive catalog edits: a topic or prompt kind removed later must not break pages.
+    db.execute(
+        "INSERT INTO sessions(id,topic_id,created_at,duration,style,prompt_kind,stage) "
+        "VALUES('old','retired-topic','2026-11-01T00:00:00+00:00',120,'Conversational','Build a solution','review1')"
+    )
+    db.execute(
+        "INSERT INTO sessions(id,topic_id,created_at,duration,style,prompt_kind,stage) "
+        "VALUES('kind','hash-maps','2026-11-01T00:00:00+00:00',120,'Conversational','Build a solution','review1')"
+    )
+    history = client.get("/api/sessions")
+    assert history.status_code == 200
+    retired = next(s for s in history.json() if s["id"] == "old")
+    assert retired["topic"]["category"] == "Retired topic"
+    detail = client.get("/api/sessions/old")
+    assert detail.status_code == 200 and detail.json()["prompt"] == ""
+    kept = client.get("/api/sessions/kind").json()
+    assert kept["prompt"] == kept["topic"]["prompt"]
+    assert client.get("/api/attempt2").status_code == 200
